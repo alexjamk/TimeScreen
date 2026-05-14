@@ -87,21 +87,52 @@ class ConfigManager:
         if CONFIG_FILE.exists():
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    raw = json.load(f)
+                # Проверка целостности
+                stored_hash = raw.pop("_hash", None)
+                if stored_hash:
+                    expected = self._compute_hash(raw)
+                    if stored_hash != expected:
+                        # Файл подделан вручную → lockdown
+                        log("CONFIG TAMPERED – entering lockdown")
+                        return {"password_hash": None, "intervals": [],
+                                "enabled": True, "show_timer": False,
+                                "_tampered": True}
+                return raw
             except Exception:
                 pass
         return {"password_hash": None, "intervals": [], "enabled": True, "show_timer": True}
 
+    def _compute_hash(self, data: dict) -> str:
+        """Хэш конфига для проверки целостности (без поля _hash)."""
+        clean = {k: v for k, v in data.items() if k != "_hash"}
+        payload = json.dumps(clean, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
     def save(self):
+        data = self.config.copy()
+        data.pop("_tampered", None)
+        data["_hash"] = self._compute_hash(data)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.config, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
     def set_password(self, pwd: str):
         self.config["password_hash"] = hash_password(pwd)
         self.save()
 
     def check_password(self, pwd: str) -> bool:
+        # При подделке конфига пароль никогда не принимается
+        if self.config.get("_tampered"):
+            return False
         if not self.config.get("password_hash"):
+            return True
+        return self.config["password_hash"] == hash_password(pwd)
+
+    def is_allowed_time(self) -> bool:
+        # При подделке конфига — всегда заблокировано
+        if self.config.get("_tampered"):
+            return False
+        if not self.config.get("enabled", True):
             return True
         return self.config["password_hash"] == hash_password(pwd)
 
@@ -374,10 +405,35 @@ class TimerOverlay:
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"+{sw - 280}+10")
 
+        self._tick = 0
         self._update()
         self.root.mainloop()
 
+    def _watchdog(self):
+        """Если монитор умер — перезапустить его."""
+        try:
+            if not PID_FILE.exists():
+                return
+            pid = int(PID_FILE.read_text().strip())
+            # Проверяем жив ли процесс
+            result = subprocess.run(
+                ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
+                capture_output=True, text=True
+            )
+            if str(pid) not in result.stdout:
+                log("Timer: monitor dead – restarting")
+                exe = sys.executable
+                subprocess.Popen([exe, "--monitor"], creationflags=0x08000000)
+        except Exception:
+            pass
+
     def _update(self):
+        self._tick += 1
+
+        # --- Watchdog: проверяем жив ли монитор (каждые 10 сек) ---
+        if self._tick % 10 == 0:
+            self._watchdog()
+
         try:
             self.cfg = ConfigManager()  # Перечитываем конфиг
         except Exception:
@@ -387,6 +443,9 @@ class TimerOverlay:
             # В grace-периоде — показываем отсрочку
             text = "Отсрочка (grace-период)"
             self.lbl.config(fg="#ffff00")  # Жёлтый
+        elif self.cfg.config.get("_tampered"):
+            text = "КОНФИГ ПОВРЕЖДЁН!"
+            self.lbl.config(fg="#ff0000")
         else:
             allowed = self.cfg.is_allowed_time()
             if allowed:
@@ -441,8 +500,17 @@ def run_monitor():
         log(f"Timer process started (PID {timer_proc.pid})")
 
     try:
+        loop_count = 0
         while True:
             cfg = ConfigManager()
+            loop_count += 1
+
+            # --- Watchdog: проверяем, жив ли таймер (каждые 30 сек) ---
+            if loop_count % 6 == 0 and timer_proc is not None:
+                if timer_proc.poll() is not None:
+                    log("Timer died – restarting")
+                    timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+
             if not cfg.config.get("enabled", True):
                 time.sleep(5)
                 continue
