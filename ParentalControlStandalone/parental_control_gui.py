@@ -34,6 +34,7 @@ else:
 CONFIG_FILE   = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "pc_config.json"
 LOCK_FLAG     = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "lock_flag"
 PID_FILE      = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "monitor.pid"
+AGENT_PID     = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "agent.pid"
 LOG_FILE      = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "service.log"
 SERVICE_NAME  = "TimeScreenControl"
 INSTALL_DIR   = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
@@ -457,12 +458,19 @@ def run_monitor():
     except Exception:
         pass
     log("Monitor started")
+    loop_count = 0
     try:
         while True:
+            loop_count += 1
             cfg = ConfigManager()
             if not cfg.config.get("enabled", True):
                 time.sleep(5)
                 continue
+
+            # Вотчдог: проверяем жив ли агент (каждые 30 сек = 6 циклов)
+            if loop_count % 6 == 0:
+                _check_and_restart_agent()
+
             if cfg.is_in_grace():
                 time.sleep(5)
                 continue
@@ -470,7 +478,6 @@ def run_monitor():
                 time.sleep(5)
                 continue
             if not cfg.is_allowed_time():
-                # Записываем флаг блокировки — пользовательский агент покажет экран
                 try:
                     LOCK_FLAG.parent.mkdir(parents=True, exist_ok=True)
                     LOCK_FLAG.write_text("1")
@@ -490,6 +497,38 @@ def run_monitor():
         log("Monitor stopped")
 
 
+def _check_and_restart_agent():
+    """Если агент убит — перезапустить через schtasks в сессии пользователя."""
+    if not AGENT_PID.exists():
+        return
+    try:
+        pid = int(AGENT_PID.read_text().strip())
+        result = subprocess.run(
+            ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
+            capture_output=True, text=True
+        )
+        if str(pid) not in result.stdout:
+            log("Agent dead – restarting via schtasks")
+            agent_vbs = INSTALL_DIR / "run_agent.vbs"
+            if agent_vbs.exists():
+                subprocess.run(
+                    ["schtasks", "/create", "/tn", "TimeScreenAgentRestart",
+                     "/tr", f'wscript.exe "{agent_vbs}"',
+                     "/sc", "once", "/st", "00:00", "/it", "/f"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                subprocess.run(
+                    ["schtasks", "/run", "/tn", "TimeScreenAgentRestart"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                subprocess.run(
+                    ["schtasks", "/delete", "/tn", "TimeScreenAgentRestart", "/f"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Пользовательский агент (таймер + блокировка по флагу)
 # ---------------------------------------------------------------------------
@@ -498,6 +537,13 @@ def run_user_agent():
     """Агент в сессии пользователя: таймер + проверка флага блокировки."""
     exe = sys.executable
     cfg = ConfigManager()
+
+    # Пишем свой PID для вотчдога службы
+    try:
+        AGENT_PID.parent.mkdir(parents=True, exist_ok=True)
+        AGENT_PID.write_text(str(os.getpid()))
+    except Exception:
+        pass
 
     # Запускаем таймер если нужно
     timer_proc = None
@@ -531,6 +577,10 @@ def run_user_agent():
     finally:
         if timer_proc is not None:
             timer_proc.terminate()
+        try:
+            AGENT_PID.unlink(missing_ok=True)
+        except Exception:
+            pass
         log("User agent stopped")
 
 
@@ -752,11 +802,13 @@ def uninstall_user():
 
     # Удаляем службу если есть
     try:
-        subprocess.run(["sc", "stop", SERVICE_NAME],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1)
+        for _ in range(3):
+            subprocess.run(["sc", "stop", SERVICE_NAME],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1)
         subprocess.run(["sc", "delete", SERVICE_NAME],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log("Service deleted")
     except Exception:
         pass
 
@@ -1102,7 +1154,8 @@ class MainApp:
 
     def _uninstall(self):
         uninstall_user()
-        self._refresh_status()
+        # Закрываем главное окно после удаления
+        self.root.destroy()
 
     def run(self):
         self.root.mainloop()
