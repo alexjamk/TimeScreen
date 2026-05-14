@@ -90,7 +90,7 @@ class ConfigManager:
                     return json.load(f)
             except Exception:
                 pass
-        return {"password_hash": None, "intervals": [], "enabled": True}
+        return {"password_hash": None, "intervals": [], "enabled": True, "show_timer": True}
 
     def save(self):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -433,9 +433,12 @@ def run_monitor():
     log("Monitor started")
     exe = sys.executable
 
-    # Запускаем таймер-оверлей отдельным процессом
-    timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
-    log(f"Timer process started (PID {timer_proc.pid})")
+    # Запускаем таймер-оверлей только если флаг show_timer включен
+    timer_proc = None
+    cfg = ConfigManager()
+    if cfg.config.get("show_timer", True):
+        timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+        log(f"Timer process started (PID {timer_proc.pid})")
 
     try:
         while True:
@@ -443,6 +446,20 @@ def run_monitor():
             if not cfg.config.get("enabled", True):
                 time.sleep(5)
                 continue
+
+            # Реакция на изменение флага show_timer
+            show = cfg.config.get("show_timer", True)
+            if show and timer_proc is None:
+                timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+                log("Timer started (flag enabled)")
+            elif not show and timer_proc is not None:
+                timer_proc.terminate()
+                try:
+                    timer_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    timer_proc.kill()
+                timer_proc = None
+                log("Timer stopped (flag disabled)")
 
             # Проверка grace-периода (10 минут после ручной разблокировки)
             if cfg.is_in_grace():
@@ -468,7 +485,8 @@ def run_monitor():
     except KeyboardInterrupt:
         pass
     finally:
-        timer_proc.terminate()
+        if timer_proc is not None:
+            timer_proc.terminate()
         try:
             PID_FILE.unlink(missing_ok=True)
         except Exception:
@@ -608,17 +626,8 @@ def uninstall_user():
 
     install_dir = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
 
-    # Убиваем процессы
-    try:
-        if PID_FILE.exists():
-            pid = int(PID_FILE.read_text().strip())
-            subprocess.run(["taskkill", "/f", "/pid", str(pid)],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-    exe_name = Path(sys.executable).name
-    subprocess.run(["taskkill", "/f", "/im", exe_name],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Убиваем процессы (включая таймер)
+    _stop_monitor_process()
 
     # Удаляем автозагрузку
     startup_link = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "TimeScreen.lnk"
@@ -632,9 +641,20 @@ def uninstall_user():
         if p.exists():
             p.unlink()
 
-    # Удаляем папку
+    # Удаляем папку — сначала конфиг, потом всё остальное
     if install_dir.exists():
-        shutil.rmtree(str(install_dir), ignore_errors=True)
+        # Явно удаляем файлы конфигурации
+        for fname in ["pc_config.json", "monitor.pid", "service.log", "run_hidden.vbs"]:
+            fp = install_dir / fname
+            try:
+                fp.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            shutil.rmtree(str(install_dir), ignore_errors=True)
+        except Exception:
+            pass
+        log(f"Uninstalled, removed {install_dir}")
 
     messagebox.showinfo("Удаление", "TimeScreen Control удалён.")
 
@@ -744,6 +764,19 @@ class MainApp:
                                     font=("Arial", 10), relief="flat", padx=10, pady=6,
                                     command=self._toggle)
         self.btn_toggle.pack(fill="x", pady=3)
+
+        # --- Индикатор ---
+        indicator_frame = ttk.LabelFrame(body, text="Индикатор в углу экрана", padding=12)
+        indicator_frame.pack(fill="x", pady=6)
+
+        self.show_timer_var = tk.BooleanVar(value=self.cfg.config.get("show_timer", True))
+        self.show_timer_cb = ttk.Checkbutton(
+            indicator_frame,
+            text="Показывать индикатор обратного отсчёта",
+            variable=self.show_timer_var,
+            command=self._toggle_show_timer
+        )
+        self.show_timer_cb.pack(anchor="w")
 
         # --- Сервис ---
         svc_frame = ttk.LabelFrame(body, text="Установка на компьютер", padding=12)
@@ -856,6 +889,7 @@ class MainApp:
                     return
 
         self.cfg.set_intervals(intervals)
+        self.cfg.clear_grace()  # Сброс grace-периода при изменении расписания
         messagebox.showinfo("Готово", f"Сохранено интервалов: {len(intervals)}")
         self._refresh_status()
 
@@ -898,6 +932,13 @@ class MainApp:
         state_text = "ВКЛЮЧЕНА" if new_state else "ВЫКЛЮЧЕНА"
         messagebox.showinfo("Защита", f"Защита {state_text}.")
         self._refresh_status()
+
+    def _toggle_show_timer(self):
+        state = self.show_timer_var.get()
+        self.cfg.config["show_timer"] = state
+        self.cfg.save()
+        # Если монитор запущен, он подхватит изменение на следующем цикле
+        log(f"show_timer set to {state}")
 
     def _kill_monitor(self):
         """Останавливает фоновый монитор по PID."""
