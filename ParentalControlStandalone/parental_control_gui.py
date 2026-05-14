@@ -652,10 +652,22 @@ def _delete_service_internal():
             subprocess.run(["sc", "stop", SERVICE_NAME],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(2)
-        subprocess.run(["sc", "delete", SERVICE_NAME],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        messagebox.showinfo("Готово", "Служба удалена.") if "showinfo" in dir() else None
-    except Exception as e:
+        result = subprocess.run(["sc", "delete", SERVICE_NAME],
+                                capture_output=True, text=True)
+        if "1072" in result.stderr or "1072" in result.stdout:
+            # Служба помечена на удаление — нужна перезагрузка
+            if messagebox.askyesno(
+                "Требуется перезагрузка",
+                "Служба помечена на удаление и исчезнет после перезагрузки.\n\n"
+                "Перезагрузить компьютер сейчас?"
+            ):
+                os.system("shutdown /r /t 10")
+            else:
+                messagebox.showinfo("Информация",
+                                    "Служба будет удалена при следующей перезагрузке.")
+        else:
+            messagebox.showinfo("Готово", "Служба удалена.")
+    except Exception:
         pass
 
 
