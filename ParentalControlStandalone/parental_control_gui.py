@@ -499,21 +499,40 @@ def run_monitor():
 # ---------------------------------------------------------------------------
 
 def _stop_monitor_process():
-    """Останавливает фоновый монитор (PID + taskkill)."""
+    """Останавливает фоновый монитор и таймер (PID, не трогая текущий процесс)."""
+    my_pid = os.getpid()
     try:
         if PID_FILE.exists():
             pid = int(PID_FILE.read_text().strip())
-            subprocess.run(["taskkill", "/f", "/pid", str(pid)],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if pid != my_pid:
+                subprocess.run(["taskkill", "/f", "/pid", str(pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             PID_FILE.unlink(missing_ok=True)
     except Exception:
         pass
-    # Убиваем все запущенные экземпляры
-    subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Убиваем wscript (VBS-хост), но НЕ свой процесс
     subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(0.5)
+    time.sleep(0.7)
+
+
+def _run_cleanup_bat(install_dir: Path):
+    """Создаёт и запускает отложенный .bat для удаления папки после выхода текущего процесса."""
+    my_pid = os.getpid()
+    tmp_bat = Path(os.environ["TEMP"]) / "_tsc_cleanup.bat"
+    with open(tmp_bat, "w") as f:
+        f.write(f'''@echo off
+:wait
+tasklist /fi "PID eq {my_pid}" 2>nul | find "{my_pid}" >nul
+if not errorlevel 1 (
+    timeout /t 1 >nul
+    goto wait
+)
+rmdir /s /q "{install_dir}" 2>nul
+del "%~f0" 2>nul
+''')
+    subprocess.Popen(["cmd", "/c", str(tmp_bat)], creationflags=0x08000000)
+    log(f"Cleanup batch started, will remove {install_dir} after exit")
 
 
 def install_user():
@@ -526,6 +545,19 @@ def install_user():
 
     # Останавливаем монитор перед копированием (файл может быть занят)
     _stop_monitor_process()
+
+    # --- Удаляем СТАРУЮ установку (v1.x) если есть ---
+    old_install_dir = Path(os.environ["LOCALAPPDATA"]) / "ParentalControl"
+    if old_install_dir.exists():
+        try:
+            shutil.rmtree(str(old_install_dir), ignore_errors=True)
+        except Exception:
+            pass
+    old_startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "ParentalControl.lnk"
+    old_startup.unlink(missing_ok=True)
+    desktop = Path.home() / "Desktop"
+    for old_name in ["Родительский контроль - Админ.lnk", "Родительский контроль - Защита.lnk"]:
+        (desktop / old_name).unlink(missing_ok=True)
 
     # Копируем себя
     if exe_path.resolve() != target_exe.resolve():
@@ -629,31 +661,46 @@ def uninstall_user():
     # Убиваем процессы (включая таймер)
     _stop_monitor_process()
 
-    # Удаляем автозагрузку
-    startup_link = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "TimeScreen.lnk"
-    if startup_link.exists():
-        startup_link.unlink()
-
-    # Удаляем ярлыки
     desktop = Path.home() / "Desktop"
-    for name in ["TimeScreen - Настройки.lnk", "TimeScreen - Защита.lnk"]:
-        p = desktop / name
-        if p.exists():
-            p.unlink()
 
-    # Удаляем папку — сначала конфиг, потом всё остальное
-    if install_dir.exists():
-        # Явно удаляем файлы конфигурации
-        for fname in ["pc_config.json", "monitor.pid", "service.log", "run_hidden.vbs"]:
-            fp = install_dir / fname
-            try:
-                fp.unlink(missing_ok=True)
-            except Exception:
-                pass
+    # --- Очистка СТАРОЙ установки (v1.x, %LOCALAPPDATA%\ParentalControl) ---
+    old_install_dir = Path(os.environ["LOCALAPPDATA"]) / "ParentalControl"
+    if old_install_dir.exists():
         try:
-            shutil.rmtree(str(install_dir), ignore_errors=True)
+            shutil.rmtree(str(old_install_dir), ignore_errors=True)
         except Exception:
             pass
+    old_startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "ParentalControl.lnk"
+    old_startup.unlink(missing_ok=True)
+    # Удаляем и старые, и новые ярлыки
+    all_shortcuts = [
+        "Родительский контроль - Админ.lnk",
+        "Родительский контроль - Защита.lnk",
+        "TimeScreen - Настройки.lnk",
+        "TimeScreen - Защита.lnk",
+    ]
+    for name in all_shortcuts:
+        (desktop / name).unlink(missing_ok=True)
+
+    # --- Очистка НОВОЙ установки (%LOCALAPPDATA%\TimeScreen) ---
+    # Удаляем автозагрузку
+    startup_link = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "TimeScreen.lnk"
+    startup_link.unlink(missing_ok=True)
+
+    # Удаляем папку
+    if install_dir.exists():
+        for fname in ["pc_config.json", "monitor.pid", "service.log", "run_hidden.vbs"]:
+            (install_dir / fname).unlink(missing_ok=True)
+        # Если текущий exe находится в install_dir — не можем удалить себя,
+        # запускаем отложенный .bat для очистки после выхода
+        my_exe = Path(sys.executable).resolve()
+        if my_exe.parent.resolve() == install_dir.resolve():
+            _run_cleanup_bat(install_dir)
+        else:
+            try:
+                shutil.rmtree(str(install_dir), ignore_errors=True)
+            except Exception:
+                _run_cleanup_bat(install_dir)
         log(f"Uninstalled, removed {install_dir}")
 
     messagebox.showinfo("Удаление", "TimeScreen Control удалён.")
