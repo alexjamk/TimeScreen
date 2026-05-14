@@ -476,6 +476,24 @@ def run_monitor():
 # Установщик (для пользователя, без прав админа)
 # ---------------------------------------------------------------------------
 
+def _stop_monitor_process():
+    """Останавливает фоновый монитор (PID + taskkill)."""
+    try:
+        if PID_FILE.exists():
+            pid = int(PID_FILE.read_text().strip())
+            subprocess.run(["taskkill", "/f", "/pid", str(pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    # Убиваем все запущенные экземпляры
+    subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.5)
+
+
 def install_user():
     """Установка в %LOCALAPPDATA%\\TimeScreen, ярлыки, автозагрузка."""
     install_dir = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
@@ -484,10 +502,32 @@ def install_user():
     exe_path = Path(sys.executable)
     target_exe = install_dir / exe_path.name
 
+    # Останавливаем монитор перед копированием (файл может быть занят)
+    _stop_monitor_process()
+
     # Копируем себя
     if exe_path.resolve() != target_exe.resolve():
-        shutil.copy2(str(exe_path), str(target_exe))
-        log(f"Copied exe to {target_exe}")
+        try:
+            shutil.copy2(str(exe_path), str(target_exe))
+            log(f"Copied exe to {target_exe}")
+        except PermissionError:
+            # Файл занят — пробуем удалить и скопировать заново
+            _stop_monitor_process()
+            time.sleep(0.5)
+            try:
+                target_exe.unlink(missing_ok=True)
+                shutil.copy2(str(exe_path), str(target_exe))
+                log(f"Re-copied exe to {target_exe}")
+            except Exception as e:
+                log(f"Copy failed: {e}")
+                messagebox.showerror(
+                    "Ошибка копирования",
+                    "Не удалось скопировать программу — файл занят.\n"
+                    "Перезагрузите компьютер и попробуйте снова."
+                )
+                return
+    else:
+        log("Already running from install dir, skipping copy")
 
     # VBS для скрытого запуска монитора
     vbs = install_dir / "run_hidden.vbs"
