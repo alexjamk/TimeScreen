@@ -752,9 +752,9 @@ class MainApp:
         self.cfg = ConfigManager()
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
-        self.root.geometry("520x700")
+        self.root.geometry("500x480")
         self.root.resizable(True, True)
-        self.root.minsize(480, 560)
+        self.root.minsize(460, 440)
 
         # Стиль
         style = ttk.Style()
@@ -762,6 +762,7 @@ class MainApp:
         style.configure("TButton", padding=8, font=("Arial", 10))
         style.configure("TLabel", font=("Arial", 10))
         style.configure("TLabelframe.Label", font=("Arial", 11, "bold"))
+        style.configure("TNotebook.Tab", font=("Arial", 10, "bold"), padding=(16, 6))
 
         self._build_ui()
         self._refresh_status()
@@ -769,47 +770,54 @@ class MainApp:
     # --- UI ---
     def _build_ui(self):
         # Header
-        header = tk.Frame(self.root, bg="#2c3e50", height=70)
+        header = tk.Frame(self.root, bg="#2c3e50", height=55)
         header.pack(fill="x")
-        tk.Label(header, text=APP_NAME, font=("Arial", 18, "bold"),
-                 bg="#2c3e50", fg="white").pack(pady=6)
+        tk.Label(header, text=APP_NAME, font=("Arial", 16, "bold"),
+                 bg="#2c3e50", fg="white").pack(pady=4)
         tk.Label(header, text=f"v{APP_VERSION} — Родительский контроль",
-                 font=("Arial", 10), bg="#2c3e50", fg="#bdc3c7").pack()
-
-        body = tk.Frame(self.root, padx=20, pady=15)
-        body.pack(fill="both", expand=True)
+                 font=("Arial", 9), bg="#2c3e50", fg="#bdc3c7").pack()
 
         # Статус
         self.status_var = tk.StringVar()
-        tk.Label(body, textvariable=self.status_var, font=("Arial", 12, "bold"),
-                 fg="#2c3e50").pack(anchor="w", pady=(0, 10))
+        status_bar = tk.Frame(self.root, bg="#ecf0f1", height=26)
+        status_bar.pack(fill="x", side="bottom")
+        tk.Label(status_bar, textvariable=self.status_var, font=("Arial", 10),
+                 bg="#ecf0f1", fg="#2c3e50", anchor="w", padx=10).pack(fill="x")
 
-        # --- Безопасность ---
-        sec_frame = ttk.LabelFrame(body, text="Безопасность", padding=12)
-        sec_frame.pack(fill="x", pady=6)
+        # Вкладки
+        nb = ttk.Notebook(self.root)
+        nb.pack(fill="both", expand=True, padx=10, pady=10)
 
+        # ====== Вкладка 1: Настройки ======
+        tab1 = tk.Frame(nb, padx=15, pady=15)
+        nb.add(tab1, text="  Настройки  ")
+
+        # Пароль
+        sec_frame = ttk.LabelFrame(tab1, text="Безопасность", padding=10)
+        sec_frame.pack(fill="x", pady=(0, 10))
         ttk.Label(sec_frame, text="Пароль администратора:").pack(anchor="w")
         self.pass_entry = ttk.Entry(sec_frame, show="*", font=("Arial", 12))
         self.pass_entry.pack(fill="x", pady=(5, 8))
-        ttk.Button(sec_frame, text="Установить / Изменить пароль",
+        ttk.Button(sec_frame, text="Установить / Изменить",
                    command=self._set_password).pack(fill="x")
 
-        # --- Расписание ---
-        sched_frame = ttk.LabelFrame(body, text="Расписание доступа", padding=12)
-        sched_frame.pack(fill="x", pady=6)
-
-        ttk.Label(sched_frame, text="Интервалы (формат: ЧЧ:ММ-ЧЧ:ММ, через запятую):").pack(anchor="w")
+        # Расписание
+        sched_frame = ttk.LabelFrame(tab1, text="Расписание доступа", padding=10)
+        sched_frame.pack(fill="x")
+        ttk.Label(sched_frame, text="Интервалы (ЧЧ:ММ-ЧЧ:ММ через запятую):").pack(anchor="w")
         ttk.Label(sched_frame, text="Пример: 08:00-22:00, 14:00-16:00",
                   font=("Arial", 9), foreground="gray").pack(anchor="w")
-
         self.sched_entry = ttk.Entry(sched_frame, font=("Arial", 12))
         self.sched_entry.pack(fill="x", pady=(5, 8))
         ttk.Button(sched_frame, text="Сохранить расписание",
                    command=self._save_schedule).pack(fill="x")
 
-        # --- Управление ---
-        ctrl_frame = ttk.LabelFrame(body, text="Управление защитой", padding=12)
-        ctrl_frame.pack(fill="x", pady=6)
+        # ====== Вкладка 2: Управление ======
+        tab2 = tk.Frame(nb, padx=15, pady=15)
+        nb.add(tab2, text="  Управление  ")
+
+        ctrl_frame = ttk.LabelFrame(tab2, text="Защита", padding=10)
+        ctrl_frame.pack(fill="x", pady=(0, 10))
 
         self.btn_start = tk.Button(ctrl_frame, text="Запустить защиту",
                                    font=("Arial", 11, "bold"), bg="#27ae60",
@@ -828,38 +836,17 @@ class MainApp:
                                     command=self._toggle)
         self.btn_toggle.pack(fill="x", pady=3)
 
-        # --- Индикатор ---
-        indicator_frame = ttk.LabelFrame(body, text="Индикатор в углу экрана", padding=12)
-        indicator_frame.pack(fill="x", pady=6)
-
+        # Индикатор
+        ind_frame = ttk.LabelFrame(tab2, text="Индикатор в углу экрана", padding=10)
+        ind_frame.pack(fill="x")
         self.show_timer_var = tk.BooleanVar(value=self.cfg.config.get("show_timer", True))
         self.show_timer_cb = ttk.Checkbutton(
-            indicator_frame,
+            ind_frame,
             text="Показывать индикатор обратного отсчёта",
             variable=self.show_timer_var,
             command=self._toggle_show_timer
         )
         self.show_timer_cb.pack(anchor="w")
-
-        # --- Сервис ---
-        svc_frame = ttk.LabelFrame(body, text="Установка на компьютер", padding=12)
-        svc_frame.pack(fill="x", pady=6)
-
-        tk.Button(svc_frame, text="Установить (для текущего пользователя)",
-                  font=("Arial", 10), bg="#2980b9", fg="white",
-                  relief="flat", padx=10, pady=6,
-                  command=self._install).pack(fill="x", pady=2)
-
-        tk.Button(svc_frame, text="Удалить программу",
-                  font=("Arial", 10), bg="#7f8c8d", fg="white",
-                  relief="flat", padx=10, pady=6,
-                  command=self._uninstall).pack(fill="x", pady=2)
-
-        # Подсказка
-        tk.Label(body, text="Программа не требует прав администратора.\n"
-                 "Для полной защиты рекомендуется установить через кнопку выше.",
-                 font=("Arial", 9), fg="#7f8c8d", justify="center",
-                 wraplength=440).pack(pady=(10, 0))
 
     # --- Действия ---
     def _refresh_status(self):
