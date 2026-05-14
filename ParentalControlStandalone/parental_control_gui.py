@@ -391,7 +391,11 @@ class TimerOverlay:
             allowed = self.cfg.is_allowed_time()
             if allowed:
                 secs, evt = self.cfg.get_next_event()
-                if secs and evt == "lock":
+                if evt is None and not self.cfg.config.get("intervals"):
+                    # Расписание не настроено — подсказываем
+                    text = "Расписание не задано"
+                    self.lbl.config(fg="#888888")  # Серый
+                elif secs and evt == "lock":
                     h = secs // 3600
                     m = (secs % 3600) // 60
                     s = secs % 60
@@ -565,19 +569,19 @@ def install_user():
         desc="Включить / выключить защиту"
     )
 
-    # Запуск монитора
-    monitor_proc = subprocess.Popen(
-        ["wscript", str(vbs)],
-        creationflags=0x08000000
-    )
-    log(f"Monitor started via VBS (PID approximate)")
+    # Монитор НЕ запускаем сразу — пользователь должен сначала настроить пароль и расписание.
+    # Автозагрузка добавит монитор при следующем входе в систему.
 
     messagebox.showinfo(
         "Установка завершена",
         f"Программа установлена в:\n{install_dir}\n\n"
         "На рабочем столе созданы ярлыки.\n"
-        "Фоновый монитор запущен и добавлен в автозагрузку.\n\n"
-        "Откройте «TimeScreen - Настройки» для настройки."
+        "Монитор добавлен в автозагрузку (запустится при следующем входе).\n\n"
+        "ДАЛЕЕ:\n"
+        "1. Откройте «TimeScreen - Настройки»\n"
+        "2. Задайте пароль администратора\n"
+        "3. Добавьте расписание (например: 08:00-22:00)\n"
+        "4. Нажмите «Запустить защиту»"
     )
 
 
