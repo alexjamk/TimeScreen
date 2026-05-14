@@ -642,6 +642,11 @@ def _uninstall_windows_service():
             None, "runas", sys.executable, "--uninstall-service", None, 1
         )
         return
+    _delete_service_internal()
+
+
+def _delete_service_internal():
+    """Удаление службы (без проверки прав — вызывающий уже админ)."""
     try:
         for _ in range(3):
             subprocess.run(["sc", "stop", SERVICE_NAME],
@@ -649,14 +654,28 @@ def _uninstall_windows_service():
             time.sleep(2)
         subprocess.run(["sc", "delete", SERVICE_NAME],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        messagebox.showinfo("Готово", "Служба удалена.")
+        messagebox.showinfo("Готово", "Служба удалена.") if "showinfo" in dir() else None
     except Exception as e:
-        messagebox.showerror("Ошибка", str(e))
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Установщик пользователя
 # ---------------------------------------------------------------------------
+
+def _check_service_static():
+    """Проверка состояния службы (статическая, не метод класса)."""
+    try:
+        result = subprocess.run(
+            ["sc", "query", SERVICE_NAME],
+            capture_output=True, text=True
+        )
+        installed = "FAILED" not in result.stdout and "1060" not in result.stdout
+        running = "RUNNING" in result.stdout
+        return installed, running
+    except Exception:
+        return False, False
+
 
 def _stop_monitor_process():
     my_pid = os.getpid()
@@ -800,17 +819,27 @@ def uninstall_user():
     startup_link = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "TimeScreen.lnk"
     startup_link.unlink(missing_ok=True)
 
-    # Удаляем службу если есть
-    try:
-        for _ in range(3):
-            subprocess.run(["sc", "stop", SERVICE_NAME],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(1)
-        subprocess.run(["sc", "delete", SERVICE_NAME],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        log("Service deleted")
-    except Exception:
-        pass
+    # Удаляем службу (требуются права админа)
+    svc_installed, _ = _check_service_static()
+    if svc_installed:
+        if is_admin():
+            try:
+                for _ in range(3):
+                    subprocess.run(["sc", "stop", SERVICE_NAME],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(1)
+                subprocess.run(["sc", "delete", SERVICE_NAME],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log("Service deleted")
+            except Exception:
+                pass
+        else:
+            # Запрашиваем повышение для удаления службы
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, "--uninstall-service-only", None, 1
+            )
+            time.sleep(2)  # Даём время на UAC и выполнение
+            # Продолжаем удаление даже если UAC отменён — службу можно удалить позже
 
     # Удаляем флаги и конфиг
     for f in (LOCK_FLAG, PID_FILE, CONFIG_FILE, LOG_FILE):
@@ -1212,6 +1241,10 @@ def main():
         _install_windows_service()
     elif args[0] == "--uninstall-service":
         _uninstall_windows_service()
+    elif args[0] == "--uninstall-service-only":
+        # Вызывается с правами админа — только удалить службу и выйти
+        _delete_service_internal()
+        sys.exit(0)
     elif args[0] == "install-user":
         install_user()
     elif args[0] == "uninstall-user":
