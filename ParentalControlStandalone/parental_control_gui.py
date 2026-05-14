@@ -274,30 +274,43 @@ class LockScreen:
     """Блокирует ВСЕ мониторы. Каждый монитор — отдельное полноэкранное окно."""
 
     def __init__(self):
-        self.cfg = ConfigManager()
-        self._windows = []
+        try:
+            self.cfg = ConfigManager()
+            self._windows = []
 
-        monitors = get_monitor_rects()
-        for i, (x, y, w, h) in enumerate(monitors):
-            win = tk.Toplevel() if i > 0 else tk.Tk()
-            win.title("Компьютер заблокирован")
-            win.geometry(f"{w}x{h}+{x}+{y}")
-            win.overrideredirect(True)
-            win.attributes("-topmost", True)
-            win.configure(bg="#1a1a2e")
-            win.protocol("WM_DELETE_WINDOW", lambda: None)
-            self._windows.append(win)
+            monitors = get_monitor_rects()
+            for i, (x, y, w, h) in enumerate(monitors):
+                win = tk.Toplevel() if i > 0 else tk.Tk()
+                win.title("Компьютер заблокирован")
+                win.geometry(f"{w}x{h}+{x}+{y}")
+                win.overrideredirect(True)
+                win.attributes("-topmost", True)
+                win.configure(bg="#1a1a2e")
+                win.protocol("WM_DELETE_WINDOW", lambda: None)
+                self._windows.append(win)
 
-        # UI строится только на первом (главном) окне
-        self.root = self._windows[0]
-        self._build_ui()
+            # UI строится только на первом (главном) окне
+            self.root = self._windows[0]
+            self._build_ui()
 
-        # Остальные окна — просто чёрный фон с текстом
-        for win in self._windows[1:]:
-            tk.Label(
-                win, text="КОМПЬЮТЕР\nЗАБЛОКИРОВАН",
-                font=("Arial", 36, "bold"), fg="#e94560", bg="#1a1a2e", justify="center"
-            ).place(relx=0.5, rely=0.5, anchor="center")
+            # Остальные окна — просто чёрный фон с текстом
+            for win in self._windows[1:]:
+                tk.Label(
+                    win, text="КОМПЬЮТЕР\nЗАБЛОКИРОВАН",
+                    font=("Arial", 36, "bold"), fg="#e94560", bg="#1a1a2e", justify="center"
+                ).place(relx=0.5, rely=0.5, anchor="center")
+        except Exception as e:
+            log(f"LockScreen init error: {e}")
+            # Аварийный выход — убиваем процессы и выходим
+            try:
+                for w in getattr(self, '_windows', []):
+                    try:
+                        w.destroy()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            raise
 
     def _build_ui(self):
         center = tk.Frame(self.root, bg="#1a1a2e")
@@ -341,19 +354,6 @@ class LockScreen:
                   bg="#e67e22", fg="white", width=15, height=2,
                   command=self._restart).pack(side="left", padx=8)
 
-        # Сброс (восстановление при повреждении конфига)
-        reset_frame = tk.Frame(center, bg="#1a1a2e")
-        reset_frame.pack(pady=(20, 0))
-        self._reset_count = 0
-        self._reset_btn = tk.Label(
-            reset_frame,
-            text="Забыли пароль? Удерживайте 5 секунд для сброса",
-            font=("Arial", 9), fg="#555555", bg="#1a1a2e", cursor="hand2"
-        )
-        self._reset_btn.pack()
-        self._reset_btn.bind("<ButtonPress-1>", self._reset_press)
-        self._reset_btn.bind("<ButtonRelease-1>", self._reset_release)
-
         # Кнопка админа (UAC)
         tk.Button(
             center, text="Войти как администратор Windows",
@@ -382,51 +382,28 @@ class LockScreen:
             self.status_lbl.config(text="Неверный пароль!")
             self.pwd_var.set("")
 
-    def _reset_press(self, event):
-        self._reset_start = time.time()
-        self._reset_btn.config(fg="#ff6666")
-
-    def _reset_release(self, event):
-        held = time.time() - self._reset_start if hasattr(self, '_reset_start') else 0
-        if held >= 5:
-            if messagebox.askyesno(
-                "Сброс настроек",
-                "Это удалит ВСЕ настройки (пароль, расписание).\n"
-                "Программу придётся настраивать заново.\n\n"
-                "Продолжить?"
-            ):
-                # Удаляем конфиг
-                try:
-                    CONFIG_FILE.unlink(missing_ok=True)
-                except Exception:
-                    pass
-                # Убиваем все процессы
+    def _admin_unlock(self):
+        """Разблокировка с правами администратора Windows."""
+        if is_admin():
+            cfg = ConfigManager()
+            if cfg.config.get("_tampered"):
+                # Конфиг повреждён — удаляем, открываем настройки
+                CONFIG_FILE.unlink(missing_ok=True)
                 subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen([sys.executable], creationflags=0x08000000)
+                self._destroy_all()
+            else:
+                # Конфиг цел — обычная разблокировка с grace-периодом
+                self.cfg.set_grace()
                 self._destroy_all()
         else:
-            self._reset_btn.config(fg="#555555")
-
-    def _admin_unlock(self):
-        """Попытка разблокировки с правами администратора Windows."""
-        if is_admin():
-            # Уже админ — удаляем конфиг, убиваем процессы, разблокируем
-            CONFIG_FILE.unlink(missing_ok=True)
-            subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # Открываем окно настроек
-            subprocess.Popen([sys.executable], creationflags=0x08000000)
-            self._destroy_all()
-        else:
-            # Запрашиваем повышение через UAC — перезапуск с флагом --recovery
+            # Запрашиваем повышение через UAC
             ctypes.windll.shell32.ShellExecuteW(
                 None, "runas", sys.executable, "--recovery", None, 1
             )
-            # Не выходим — если UAC отменён, остаёмся на экране блокировки
 
     def _destroy_all(self):
         for win in self._windows:
@@ -655,10 +632,10 @@ def _install_windows_service():
         except Exception:
             pass
 
-    # Создаём bat-файл для службы
+    # Создаём bat-файл для службы (прямой запуск exe, без start)
     service_bat = install_dir / "run_service.bat"
     with open(service_bat, "w") as f:
-        f.write(f'@echo off\nstart "" "{target_exe}" --service\n')
+        f.write(f'@echo off\r\n"{target_exe}" --service\r\n')
 
     service_name = "TimeScreenControl"
     display_name = "TimeScreen - Родительский контроль"
@@ -1290,13 +1267,19 @@ def main():
         LockScreen().run()
     elif args[0] == "--recovery":
         # Режим восстановления (запущен с правами админа)
-        CONFIG_FILE.unlink(missing_ok=True)
+        cfg = ConfigManager()
+        if cfg.config.get("_tampered"):
+            CONFIG_FILE.unlink(missing_ok=True)
         subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        # Открываем окно настроек для повторной настройки
-        messagebox.showinfo("Восстановление",
-                            "Конфигурация сброшена.\n"
-                            "Задайте новый пароль и расписание.")
+        if cfg.config.get("_tampered"):
+            messagebox.showinfo("Восстановление",
+                                "Конфигурация была повреждена и сброшена.\n"
+                                "Задайте новый пароль и расписание.")
+        else:
+            messagebox.showinfo("Вход администратора",
+                                "Вход выполнен с правами администратора.\n"
+                                "Включён grace-период 10 минут.")
         app = MainApp()
         app.run()
     elif args[0] == "--timer":
