@@ -598,19 +598,42 @@ def _install_windows_service():
 
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
     exe_path = Path(sys.executable)
-    target_exe = INSTALL_DIR / exe_path.name
+    target_gui = INSTALL_DIR / exe_path.name  # TimeScreenControl.exe
 
-    # Копируем exe
-    if exe_path.resolve() != target_exe.resolve():
+    # Копируем GUI exe
+    if exe_path.resolve() != target_gui.resolve():
         try:
-            shutil.copy2(str(exe_path), str(target_exe))
+            shutil.copy2(str(exe_path), str(target_gui))
         except Exception:
             pass
 
-    # VBS обёртка: wscript.exe ждёт завершения exe (True), служба не гаснет
-    service_vbs = INSTALL_DIR / "run_service.vbs"
-    with open(service_vbs, "w") as f:
-        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --service-daemon", 0, True\n')
+    # Ищем и копируем service daemon exe (TimeScreenService.exe)
+    daemon_candidates = [
+        exe_path.parent / "TimeScreenService.exe",
+        Path(os.environ.get("TEMP", ".")) / "tsc_installer" / "TimeScreenService.exe",
+    ]
+    target_daemon = INSTALL_DIR / "TimeScreenService.exe"
+    daemon_found = False
+    for src in daemon_candidates:
+        if src.exists() and src.resolve() != target_daemon.resolve():
+            try:
+                shutil.copy2(str(src), str(target_daemon))
+                daemon_found = True
+                break
+            except Exception:
+                continue
+
+    if not daemon_found and target_daemon.exists():
+        daemon_found = True  # уже на месте
+
+    if not daemon_found:
+        messagebox.showwarning(
+            "Внимание",
+            "Не найден файл службы TimeScreenService.exe.\n"
+            "Он должен лежать рядом с TimeScreenControl.exe.\n"
+            "Пересоберите проект."
+        )
+        return
 
     try:
         subprocess.run(["sc", "stop", SERVICE_NAME],
@@ -621,7 +644,7 @@ def _install_windows_service():
         time.sleep(1)
         result = subprocess.run(
             ["sc", "create", SERVICE_NAME,
-             "binPath=", f'wscript.exe "{service_vbs}"',
+             "binPath=", f'"{target_daemon}"',
              "DisplayName=", "TimeScreen - Родительский контроль",
              "start=", "auto"],
             capture_output=True, text=True
