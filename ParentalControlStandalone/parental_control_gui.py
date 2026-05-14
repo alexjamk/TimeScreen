@@ -776,7 +776,7 @@ def install_user():
 
     _stop_monitor_process()
 
-    # Копируем себя
+    # Копируем себя (GUI)
     if exe_path.resolve() != target_exe.resolve():
         try:
             shutil.copy2(str(exe_path), str(target_exe))
@@ -788,6 +788,15 @@ def install_user():
                 shutil.copy2(str(exe_path), str(target_exe))
             except Exception:
                 pass
+
+    # Копируем Service Daemon (если лежит рядом)
+    daemon_src = exe_path.parent / "TimeScreenService.exe"
+    daemon_dst = INSTALL_DIR / "TimeScreenService.exe"
+    if daemon_src.exists() and daemon_src.resolve() != daemon_dst.resolve():
+        try:
+            shutil.copy2(str(daemon_src), str(daemon_dst))
+        except Exception:
+            pass
 
     # VBS для скрытого запуска пользовательского агента
     vbs = INSTALL_DIR / "run_agent.vbs"
