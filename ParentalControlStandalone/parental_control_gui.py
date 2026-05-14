@@ -341,6 +341,19 @@ class LockScreen:
                   bg="#e67e22", fg="white", width=15, height=2,
                   command=self._restart).pack(side="left", padx=8)
 
+        # Сброс (восстановление при повреждении конфига)
+        reset_frame = tk.Frame(center, bg="#1a1a2e")
+        reset_frame.pack(pady=(20, 0))
+        self._reset_count = 0
+        self._reset_btn = tk.Label(
+            reset_frame,
+            text="Забыли пароль? Удерживайте 5 секунд для сброса",
+            font=("Arial", 9), fg="#555555", bg="#1a1a2e", cursor="hand2"
+        )
+        self._reset_btn.pack()
+        self._reset_btn.bind("<ButtonPress-1>", self._reset_press)
+        self._reset_btn.bind("<ButtonRelease-1>", self._reset_release)
+
         # Часы
         self.clock_lbl = tk.Label(self.root, text="", font=("Arial", 13),
                                   fg="#ffffff", bg="#1a1a2e")
@@ -360,6 +373,33 @@ class LockScreen:
         else:
             self.status_lbl.config(text="Неверный пароль!")
             self.pwd_var.set("")
+
+    def _reset_press(self, event):
+        self._reset_start = time.time()
+        self._reset_btn.config(fg="#ff6666")
+
+    def _reset_release(self, event):
+        held = time.time() - self._reset_start if hasattr(self, '_reset_start') else 0
+        if held >= 5:
+            if messagebox.askyesno(
+                "Сброс настроек",
+                "Это удалит ВСЕ настройки (пароль, расписание).\n"
+                "Программу придётся настраивать заново.\n\n"
+                "Продолжить?"
+            ):
+                # Удаляем конфиг
+                try:
+                    CONFIG_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                # Убиваем все процессы
+                subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self._destroy_all()
+        else:
+            self._reset_btn.config(fg="#555555")
 
     def _destroy_all(self):
         for win in self._windows:
