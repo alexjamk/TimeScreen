@@ -354,6 +354,14 @@ class LockScreen:
         self._reset_btn.bind("<ButtonPress-1>", self._reset_press)
         self._reset_btn.bind("<ButtonRelease-1>", self._reset_release)
 
+        # Кнопка админа (UAC)
+        tk.Button(
+            center, text="Войти как администратор Windows",
+            font=("Arial", 10), bg="#8e44ad", fg="white",
+            relief="flat", padx=10, pady=4,
+            command=self._admin_unlock
+        ).pack(pady=(10, 0))
+
         # Часы
         self.clock_lbl = tk.Label(self.root, text="", font=("Arial", 13),
                                   fg="#ffffff", bg="#1a1a2e")
@@ -400,6 +408,25 @@ class LockScreen:
                 self._destroy_all()
         else:
             self._reset_btn.config(fg="#555555")
+
+    def _admin_unlock(self):
+        """Попытка разблокировки с правами администратора Windows."""
+        if is_admin():
+            # Уже админ — удаляем конфиг, убиваем процессы, разблокируем
+            CONFIG_FILE.unlink(missing_ok=True)
+            subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Открываем окно настроек
+            subprocess.Popen([sys.executable], creationflags=0x08000000)
+            self._destroy_all()
+        else:
+            # Запрашиваем повышение через UAC — перезапуск с флагом --recovery
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, "--recovery", None, 1
+            )
+            # Не выходим — если UAC отменён, остаёмся на экране блокировки
 
     def _destroy_all(self):
         for win in self._windows:
@@ -577,17 +604,24 @@ def run_monitor():
             if not cfg.is_allowed_time():
                 log("Time blocked – launching lock screen")
                 # Закрываем таймер
-                timer_proc.terminate()
-                try:
-                    timer_proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    timer_proc.kill()
+                if timer_proc is not None:
+                    timer_proc.terminate()
+                    try:
+                        timer_proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        timer_proc.kill()
+                    timer_proc = None
                 # Показываем экран блокировки
-                lock_proc = subprocess.Popen([exe, "--lock"], creationflags=0x08000000)
-                lock_proc.wait()
+                try:
+                    lock_proc = subprocess.Popen([exe, "--lock"], creationflags=0x08000000)
+                    lock_proc.wait()
+                except Exception as e:
+                    log(f"ERROR launching lock screen: {e}")
                 log("Lock screen closed – restarting timer")
-                # Перезапускаем таймер
-                timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+                # Перезапускаем таймер (если флаг включен)
+                cfg2 = ConfigManager()
+                if cfg2.config.get("show_timer", True):
+                    timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
 
             time.sleep(5)
     except KeyboardInterrupt:
@@ -605,6 +639,72 @@ def run_monitor():
 # ---------------------------------------------------------------------------
 # Установщик (для пользователя, без прав админа)
 # ---------------------------------------------------------------------------
+
+def _install_windows_service():
+    """Установка Windows-службы от имени SYSTEM."""
+    install_dir = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
+    install_dir.mkdir(parents=True, exist_ok=True)
+
+    exe_path = Path(sys.executable)
+    target_exe = install_dir / exe_path.name
+
+    # Копируем exe
+    if exe_path.resolve() != target_exe.resolve():
+        try:
+            shutil.copy2(str(exe_path), str(target_exe))
+        except Exception:
+            pass
+
+    # Создаём bat-файл для службы
+    service_bat = install_dir / "run_service.bat"
+    with open(service_bat, "w") as f:
+        f.write(f'@echo off\nstart "" "{target_exe}" --service\n')
+
+    service_name = "TimeScreenControl"
+    display_name = "TimeScreen - Родительский контроль"
+
+    try:
+        subprocess.run(["sc", "stop", service_name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["sc", "delete", service_name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.5)
+        result = subprocess.run(
+            ["sc", "create", service_name,
+             "binPath=", f'cmd /c "{service_bat}"',
+             "DisplayName=", display_name,
+             "start=", "auto",
+             "type=", "own"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            subprocess.run(["sc", "start", service_name],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            messagebox.showinfo("Готово",
+                                f"Служба «{display_name}» установлена и запущена.\n"
+                                "Она будет автоматически запускаться при старте Windows.")
+        else:
+            messagebox.showerror("Ошибка", f"Не удалось создать службу:\n{result.stderr}")
+    except Exception as e:
+        messagebox.showerror("Ошибка", str(e))
+
+
+def _uninstall_windows_service():
+    """Удаление Windows-службы."""
+    service_name = "TimeScreenControl"
+    try:
+        subprocess.run(["sc", "stop", service_name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+        result = subprocess.run(["sc", "delete", service_name],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            messagebox.showinfo("Готово", "Служба удалена.")
+        else:
+            messagebox.showerror("Ошибка", f"Не удалось удалить службу:\n{result.stderr}")
+    except Exception as e:
+        messagebox.showerror("Ошибка", str(e))
+
 
 def _stop_monitor_process():
     """Останавливает фоновый монитор и таймер где бы они ни были запущены."""
@@ -956,6 +1056,38 @@ class MainApp:
         )
         self.show_timer_cb.pack(anchor="w")
 
+        # ====== Вкладка 3: Система ======
+        tab3 = tk.Frame(nb, padx=15, pady=15)
+        nb.add(tab3, text="  Система  ")
+
+        svc_frame = ttk.LabelFrame(tab3, text="Установка", padding=10)
+        svc_frame.pack(fill="x", pady=(0, 10))
+
+        tk.Button(svc_frame, text="Установить для пользователя",
+                  font=("Arial", 10), bg="#2980b9", fg="white",
+                  relief="flat", padx=10, pady=6,
+                  command=self._install).pack(fill="x", pady=2)
+
+        tk.Button(svc_frame, text="Установить как службу Windows (требует админ)",
+                  font=("Arial", 10), bg="#8e44ad", fg="white",
+                  relief="flat", padx=10, pady=6,
+                  command=self._install_service).pack(fill="x", pady=2)
+
+        tk.Button(svc_frame, text="Удалить службу Windows",
+                  font=("Arial", 10), bg="#7f8c8d", fg="white",
+                  relief="flat", padx=10, pady=6,
+                  command=self._uninstall_service).pack(fill="x", pady=2)
+
+        tk.Button(svc_frame, text="Удалить программу полностью",
+                  font=("Arial", 10), bg="#c0392b", fg="white",
+                  relief="flat", padx=10, pady=6,
+                  command=self._uninstall).pack(fill="x", pady=2)
+
+        ttk.Label(tab3, text="Служба Windows работает от имени SYSTEM,\n"
+                  "её нельзя завершить из Диспетчера задач.",
+                  font=("Arial", 9), foreground="gray",
+                  justify="center").pack(pady=(5, 0))
+
     # --- Действия ---
     def _refresh_status(self):
         has_pwd = bool(self.cfg.config.get("password_hash"))
@@ -1117,6 +1249,24 @@ class MainApp:
         install_user()
         self._refresh_status()
 
+    def _install_service(self):
+        """Установка как служба Windows (требует прав администратора)."""
+        if not is_admin():
+            # Пытаемся повысить права через UAC
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, "--install-service", None, 1
+            )
+            return
+        _install_windows_service()
+
+    def _uninstall_service(self):
+        if not is_admin():
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, "--uninstall-service", None, 1
+            )
+            return
+        _uninstall_windows_service()
+
     def _uninstall(self):
         uninstall_user()
         self._refresh_status()
@@ -1138,6 +1288,17 @@ def main():
         app.run()
     elif args[0] == "--lock":
         LockScreen().run()
+    elif args[0] == "--recovery":
+        # Режим восстановления (запущен с правами админа)
+        CONFIG_FILE.unlink(missing_ok=True)
+        subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Открываем окно настроек для повторной настройки
+        messagebox.showinfo("Восстановление",
+                            "Конфигурация сброшена.\n"
+                            "Задайте новый пароль и расписание.")
+        app = MainApp()
+        app.run()
     elif args[0] == "--timer":
         TimerOverlay()
     elif args[0] == "--monitor":
@@ -1169,6 +1330,20 @@ def main():
         install_user()
     elif args[0] == "uninstall-user":
         uninstall_user()
+    elif args[0] == "--install-service":
+        if not is_admin():
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, "--install-service", None, 1
+            )
+            sys.exit(0)
+        _install_windows_service()
+    elif args[0] == "--uninstall-service":
+        if not is_admin():
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, "--uninstall-service", None, 1
+            )
+            sys.exit(0)
+        _uninstall_windows_service()
     elif args[0] == "--help" or args[0] == "help":
         print(f"{APP_NAME} v{APP_VERSION}")
         print("  (без аргументов)    – главное окно настроек")
