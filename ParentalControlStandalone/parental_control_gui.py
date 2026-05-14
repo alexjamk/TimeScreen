@@ -736,7 +736,7 @@ class MainApp:
         self.cfg = ConfigManager()
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
-        self.root.geometry("520x620")
+        self.root.geometry("520x700")
         self.root.resizable(True, True)
         self.root.minsize(480, 560)
 
