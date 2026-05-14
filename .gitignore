@@ -1,4 +1,3 @@
-```
 # Python
 __pycache__/
 *.pyc
@@ -39,4 +38,13 @@ dist/
 *.tmp
 .DS_Store
 Thumbs.db
-```
+
+# Executable builds
+*.exe
+*.msi
+*.app
+*.spec
+
+# Installer packages (generated)
+ParentalControl_Installer_User/
+TimeScreen_Installer/

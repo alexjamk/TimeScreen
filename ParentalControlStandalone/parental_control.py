@@ -112,7 +112,7 @@ def set_password():
     config["password_hash"] = password_hash
     config["salt"] = salt
     save_config()
-    print("✓ Пароль успешно установлен\n")
+    print("[OK] Пароль успешно установлен\n")
 
 def add_schedule():
     """Добавление временного интервала"""
@@ -137,7 +137,7 @@ def add_schedule():
     
     config["schedule"].append({"start": start, "end": end})
     save_config()
-    print(f"✓ Интервал {start} - {end} добавлен\n")
+    print(f"[OK] Интервал {start} - {end} добавлен\n")
 
 def show_schedule():
     """Показать текущее расписание"""
@@ -153,14 +153,12 @@ def clear_schedule():
     """Очистить расписание"""
     config["schedule"] = []
     save_config()
-    print("✓ Расписание очищено\n")
+    print("[OK] Расписание очищено\n")
 
 def admin_menu():
     """Меню администратора"""
-    if not is_admin():
-        print("Требуется запуск от имени администратора!")
-        run_as_admin()
-    
+    # Для управления конфигурацией права администратора не требуются
+    # (только для установки/удаления службы Windows)
     load_config()
     
     while True:
@@ -186,7 +184,7 @@ def admin_menu():
             config["enabled"] = not config["enabled"]
             status = "включена" if config["enabled"] else "выключена"
             save_config()
-            print(f"✓ Защита {status}\n")
+            print(f"[OK] Защита {status}\n")
         elif choice == "6":
             break
         else:
@@ -438,14 +436,14 @@ def install_service():
         if result.returncode == 0:
             # Запускаем службу
             subprocess.call(["sc", "start", service_name])
-            print("✓ Служба успешно установлена и запущена")
+            print("[OK] Служба успешно установлена и запущена")
             print(f"  Имя службы: {service_name}")
             print(f"  Отображаемое имя: {display_name}")
         else:
-            print(f"✗ Ошибка установки службы: {result.stderr}")
+            print(f"[ERROR] Ошибка установки службы: {result.stderr}")
             
     except Exception as e:
-        print(f"✗ Ошибка: {e}")
+        print(f"[ERROR] Ошибка: {e}")
 
 def uninstall_service():
     """Удаление службы Windows"""
@@ -461,12 +459,155 @@ def uninstall_service():
         result = subprocess.run(["sc", "delete", service_name], capture_output=True, text=True)
         
         if result.returncode == 0:
-            print("✓ Служба успешно удалена")
+            print("[OK] Служба успешно удалена")
         else:
-            print(f"✗ Ошибка удаления: {result.stderr}")
+            print(f"[ERROR] Ошибка удаления: {result.stderr}")
             
     except Exception as e:
-        print(f"✗ Ошибка: {e}")
+        print(f"[ERROR] Ошибка: {e}")
+
+def install_user_mode():
+    """Установка для текущего пользователя (без прав администратора)"""
+    install_dir = Path(os.environ["LOCALAPPDATA"]) / "ParentalControl"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    
+    exe_path = Path(sys.executable)
+    
+    # Копируем exe в папку установки (если мы не уже там)
+    target_exe = install_dir / "ParentalControl.exe"
+    if exe_path.resolve() != target_exe.resolve():
+        import shutil
+        shutil.copy2(str(exe_path), str(target_exe))
+        print(f"[OK] Программа скопирована в {install_dir}")
+    
+    # Создаём VBS-скрипт для скрытого запуска фонового процесса
+    vbs_path = install_dir / "run_hidden.vbs"
+    with open(vbs_path, "w") as f:
+        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --user-mode", 0, False\n')
+    print("[OK] Создан скрипт скрытого запуска")
+    
+    # Добавляем в автозагрузку
+    startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Создаём ярлык в папке автозагрузки через VBS
+    shortcut_vbs = install_dir / "_create_startup_shortcut.vbs"
+    shortcut_path = startup_dir / "ParentalControl.lnk"
+    with open(shortcut_vbs, "w") as f:
+        f.write(f'''
+Set oWS = WScript.CreateObject("WScript.Shell")
+sLinkFile = "{shortcut_path}"
+Set oLink = oWS.CreateShortcut(sLinkFile)
+oLink.TargetPath = "wscript.exe"
+oLink.Arguments = """{vbs_path}"""
+oLink.WorkingDirectory = "{install_dir}"
+oLink.WindowStyle = 7
+oLink.Description = "Родительский контроль - фоновый процесс"
+oLink.IconLocation = "{target_exe}, 0"
+oLink.Save
+''')
+    subprocess.call(["cscript", "//nologo", str(shortcut_vbs)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    shortcut_vbs.unlink(missing_ok=True)
+    print("[OK] Добавлено в автозагрузку")
+    
+    # Создаём ярлыки на рабочем столе
+    desktop = Path.home() / "Desktop"
+    
+    # Ярлык 1: Панель администратора
+    admin_vbs = install_dir / "_create_admin_shortcut.vbs"
+    admin_shortcut = desktop / "Родительский контроль - Админ.lnk"
+    with open(admin_vbs, "w") as f:
+        f.write(f'''
+Set oWS = WScript.CreateObject("WScript.Shell")
+sLinkFile = "{admin_shortcut}"
+Set oLink = oWS.CreateShortcut(sLinkFile)
+oLink.TargetPath = "{target_exe}"
+oLink.Arguments = "admin"
+oLink.WorkingDirectory = "{install_dir}"
+oLink.Description = "Панель администратора родительского контроля"
+oLink.IconLocation = "{target_exe}, 0"
+oLink.Save
+''')
+    subprocess.call(["cscript", "//nologo", str(admin_vbs)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    admin_vbs.unlink(missing_ok=True)
+    
+    # Ярлык 2: Включить/выключить защиту
+    toggle_vbs = install_dir / "_create_toggle_shortcut.vbs"
+    toggle_shortcut = desktop / "Родительский контроль - Защита.lnk"
+    with open(toggle_vbs, "w") as f:
+        f.write(f'''
+Set oWS = WScript.CreateObject("WScript.Shell")
+sLinkFile = "{toggle_shortcut}"
+Set oLink = oWS.CreateShortcut(sLinkFile)
+oLink.TargetPath = "{target_exe}"
+oLink.Arguments = "toggle"
+oLink.WorkingDirectory = "{install_dir}"
+oLink.Description = "Включить/выключить родительский контроль"
+oLink.IconLocation = "{target_exe}, 0"
+oLink.Save
+''')
+    subprocess.call(["cscript", "//nologo", str(toggle_vbs)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    toggle_vbs.unlink(missing_ok=True)
+    
+    print("[OK] Ярлыки созданы на рабочем столе:")
+    print(f"  - {admin_shortcut}")
+    print(f"  - {toggle_shortcut}")
+    
+    # Запускаем фоновый процесс
+    subprocess.Popen(["wscript", str(vbs_path)], 
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print("[OK] Фоновый процесс запущен")
+    
+    print("\n=== Установка завершена! ===")
+    print(f"Программа установлена в: {install_dir}")
+    print("Фоновый процесс работает в автостарте.")
+    print("\nСЛЕДУЮЩИЕ ШАГИ:")
+    print("1. Откройте 'Родительский контроль - Админ' на рабочем столе")
+    print("2. Установите пароль администратора")
+    print("3. Добавьте разрешённые временные интервалы")
+
+def uninstall_user_mode():
+    """Удаление пользовательской установки"""
+    install_dir = Path(os.environ["LOCALAPPDATA"]) / "ParentalControl"
+    
+    # Убиваем фоновый процесс
+    subprocess.call(["taskkill", "/f", "/im", "ParentalControl.exe"], 
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.call(["taskkill", "/f", "/im", "wscript.exe", "/fi", "WINDOWTITLE eq ParentalControl"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # Удаляем из автозагрузки
+    startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup_link = startup_dir / "ParentalControl.lnk"
+    if startup_link.exists():
+        startup_link.unlink()
+        print("[OK] Удалено из автозагрузки")
+    
+    # Удаляем ярлыки с рабочего стола
+    desktop = Path.home() / "Desktop"
+    for lnk in ["Родительский контроль - Админ.lnk", "Родительский контроль - Защита.lnk"]:
+        path = desktop / lnk
+        if path.exists():
+            path.unlink()
+            print(f"[OK] Удалён ярлык: {lnk}")
+    
+    # Удаляем папку программы
+    if install_dir.exists():
+        import shutil
+        shutil.rmtree(str(install_dir))
+        print(f"[OK] Удалена папка программы: {install_dir}")
+    
+    print("\n=== Удаление завершено! ===")
+
+def toggle_protection():
+    """Быстрое включение/выключение защиты (для ярлыка)"""
+    load_config()
+    config["enabled"] = not config["enabled"]
+    save_config()
+    status = "ВКЛЮЧЕНА" if config["enabled"] else "ВЫКЛЮЧЕНА"
+    print(f"\nЗащита {status}")
+    print("Это окно закроется автоматически через 3 секунды...")
+    time.sleep(3)
 
 def main():
     """Точка входа"""
@@ -475,11 +616,20 @@ def main():
         
         if arg == "admin":
             admin_menu()
+        elif arg == "toggle":
+            toggle_protection()
         elif arg == "install":
             install_service()
         elif arg == "uninstall":
             uninstall_service()
+        elif arg == "install-user":
+            install_user_mode()
+        elif arg == "uninstall-user":
+            uninstall_user_mode()
         elif arg == "--service":
+            service_loop()
+        elif arg == "--user-mode":
+            # Фоновый режим для текущего пользователя (без прав админа)
             service_loop()
         elif arg == "start":
             if not is_admin():
@@ -488,24 +638,25 @@ def main():
             service_loop()
         elif arg == "help":
             print("\n=== Родительский контроль ===")
-            print("Команды:")
-            print("  python parental_control.py admin    - Панель администратора")
-            print("  python parental_control.py install  - Установить службу Windows")
-            print("  python parental_control.py uninstall - Удалить службу")
-            print("  python parental_control.py start    - Запустить службу вручную")
-            print("  python parental_control.py help     - Эта справка")
-            print("\nДля работы требуется запуск от имени администратора!")
+            print("Команды (права администратора НЕ требуются):")
+            print("  ParentalControl.exe admin         - Панель администратора")
+            print("  ParentalControl.exe toggle        - Включить/выключить защиту")
+            print("  ParentalControl.exe install-user  - Установка для текущего пользователя")
+            print("  ParentalControl.exe uninstall-user - Удаление пользовательской установки")
+            print("")
+            print("Команды (права администратора ТРЕБУЮТСЯ):")
+            print("  ParentalControl.exe install       - Установить как службу Windows")
+            print("  ParentalControl.exe uninstall     - Удалить службу Windows")
+            print("  ParentalControl.exe start         - Запустить службу вручную")
+            print("  ParentalControl.exe help          - Эта справка")
         else:
             print(f"Неизвестная команда: {arg}")
             print("Используйте 'help' для справки")
     else:
-        # Запуск без аргументов - просто проверка
-        print("Родительский контроль v1.0")
-        print("Используйте 'help' для справки")
-        print("\nБыстрый старт:")
-        print("1. Запустите от имени администратора: parental_control.py admin")
-        print("2. Установите пароль и расписание")
-        print("3. Установите службу: parental_control.py install")
+        # Запуск без аргументов - открываем панель администратора
+        print("Родительский контроль v2.0")
+        print("Запуск панели администратора...\n")
+        admin_menu()
 
 if __name__ == "__main__":
     main()
