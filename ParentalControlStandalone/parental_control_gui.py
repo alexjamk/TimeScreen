@@ -1303,6 +1303,9 @@ def main():
         TimerOverlay()
     elif args[0] == "--monitor":
         run_monitor()
+    elif args[0] == "--service":
+        # Режим запуска от службы Windows — то же, что и монитор
+        run_monitor()
     elif args[0] == "--toggle":
         cfg = ConfigManager()
         if cfg.config.get("password_hash"):
