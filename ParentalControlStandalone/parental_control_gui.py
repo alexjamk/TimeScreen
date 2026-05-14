@@ -885,9 +885,12 @@ def uninstall_user():
             time.sleep(2)  # Даём время на UAC и выполнение
             # Продолжаем удаление даже если UAC отменён — службу можно удалить позже
 
-    # Удаляем флаги и конфиг
-    for f in (LOCK_FLAG, PID_FILE, CONFIG_FILE, LOG_FILE):
-        f.unlink(missing_ok=True)
+    # Удаляем флаги и конфиг (игнорируем PermissionError — файлы от SYSTEM)
+    for f in (LOCK_FLAG, PID_FILE, CONFIG_FILE, LOG_FILE, AGENT_PID):
+        try:
+            f.unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
     # Удаляем папку
     if INSTALL_DIR.exists():
