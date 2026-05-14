@@ -618,7 +618,7 @@ def run_monitor():
 # ---------------------------------------------------------------------------
 
 def _install_windows_service():
-    """Установка Windows-службы от имени SYSTEM."""
+    """Установка Windows-службы от имени SYSTEM (через VBS-обёртку)."""
     install_dir = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
     install_dir.mkdir(parents=True, exist_ok=True)
 
@@ -632,10 +632,10 @@ def _install_windows_service():
         except Exception:
             pass
 
-    # Создаём bat-файл для службы (прямой запуск exe, без start)
-    service_bat = install_dir / "run_service.bat"
-    with open(service_bat, "w") as f:
-        f.write(f'@echo off\r\n"{target_exe}" --service\r\n')
+    # VBS-обёртка: wscript ждёт завершения exe, поэтому служба не гаснет
+    service_vbs = install_dir / "run_service.vbs"
+    with open(service_vbs, "w") as f:
+        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --monitor", 0, True\n')
 
     service_name = "TimeScreenControl"
     display_name = "TimeScreen - Родительский контроль"
@@ -643,23 +643,22 @@ def _install_windows_service():
     try:
         subprocess.run(["sc", "stop", service_name],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
         subprocess.run(["sc", "delete", service_name],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.5)
+        time.sleep(1)
         result = subprocess.run(
             ["sc", "create", service_name,
-             "binPath=", f'cmd /c "{service_bat}"',
+             "binPath=", f'wscript.exe "{service_vbs}"',
              "DisplayName=", display_name,
-             "start=", "auto",
-             "type=", "own"],
+             "start=", "auto"],
             capture_output=True, text=True
         )
         if result.returncode == 0:
             subprocess.run(["sc", "start", service_name],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             messagebox.showinfo("Готово",
-                                f"Служба «{display_name}» установлена и запущена.\n"
-                                "Она будет автоматически запускаться при старте Windows.")
+                                f"Служба «{display_name}» установлена и запущена.")
         else:
             messagebox.showerror("Ошибка", f"Не удалось создать службу:\n{result.stderr}")
     except Exception as e:
@@ -670,15 +669,19 @@ def _uninstall_windows_service():
     """Удаление Windows-службы."""
     service_name = "TimeScreenControl"
     try:
-        subprocess.run(["sc", "stop", service_name],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1)
+        for _ in range(3):
+            subprocess.run(["sc", "stop", service_name],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(2)
         result = subprocess.run(["sc", "delete", service_name],
                                 capture_output=True, text=True)
         if result.returncode == 0:
             messagebox.showinfo("Готово", "Служба удалена.")
         else:
-            messagebox.showerror("Ошибка", f"Не удалось удалить службу:\n{result.stderr}")
+            # Пробуем принудительно
+            subprocess.run(["sc", "delete", service_name],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            messagebox.showinfo("Готово", "Служба удалена (возможно, потребуется перезагрузка).")
     except Exception as e:
         messagebox.showerror("Ошибка", str(e))
 
@@ -729,6 +732,8 @@ if not errorlevel 1 (
     timeout /t 1 >nul
     goto wait
 )
+sc stop TimeScreenControl 2>nul
+sc delete TimeScreenControl 2>nul
 rmdir /s /q "{install_dir}" 2>nul
 del "%~f0" 2>nul
 ''')
@@ -1011,15 +1016,10 @@ class MainApp:
         self.btn_start.pack(fill="x", pady=3)
 
         self.btn_stop = tk.Button(ctrl_frame, text="Остановить защиту",
-                                  font=("Arial", 11, "bold"), bg="#c0392b",
-                                  fg="white", relief="flat", padx=10, pady=8,
-                                  state="disabled", command=self._stop_protection)
+                                   font=("Arial", 11, "bold"), bg="#c0392b",
+                                   fg="white", relief="flat", padx=10, pady=8,
+                                   state="disabled", command=self._stop_protection)
         self.btn_stop.pack(fill="x", pady=3)
-
-        self.btn_toggle = tk.Button(ctrl_frame, text="Включить / Выключить защиту",
-                                    font=("Arial", 10), relief="flat", padx=10, pady=6,
-                                    command=self._toggle)
-        self.btn_toggle.pack(fill="x", pady=3)
 
         # Индикатор
         ind_frame = ttk.LabelFrame(tab2, text="Индикатор в углу экрана", padding=10)
@@ -1037,33 +1037,28 @@ class MainApp:
         tab3 = tk.Frame(nb, padx=15, pady=15)
         nb.add(tab3, text="  Система  ")
 
-        svc_frame = ttk.LabelFrame(tab3, text="Установка", padding=10)
+        # Служба Windows
+        svc_frame = ttk.LabelFrame(tab3, text="Служба Windows", padding=10)
         svc_frame.pack(fill="x", pady=(0, 10))
 
-        tk.Button(svc_frame, text="Установить для пользователя",
-                  font=("Arial", 10), bg="#2980b9", fg="white",
-                  relief="flat", padx=10, pady=6,
-                  command=self._install).pack(fill="x", pady=2)
+        self.svc_status_var = tk.StringVar(value="Проверка...")
+        ttk.Label(svc_frame, textvariable=self.svc_status_var,
+                  font=("Arial", 10)).pack(anchor="w", pady=(0, 5))
 
-        tk.Button(svc_frame, text="Установить как службу Windows (требует админ)",
-                  font=("Arial", 10), bg="#8e44ad", fg="white",
-                  relief="flat", padx=10, pady=6,
-                  command=self._install_service).pack(fill="x", pady=2)
+        self.btn_service = tk.Button(svc_frame, text="Установить службу",
+                                     font=("Arial", 10), bg="#8e44ad", fg="white",
+                                     relief="flat", padx=10, pady=6,
+                                     command=self._toggle_service)
+        self.btn_service.pack(fill="x", pady=2)
 
-        tk.Button(svc_frame, text="Удалить службу Windows",
-                  font=("Arial", 10), bg="#7f8c8d", fg="white",
-                  relief="flat", padx=10, pady=6,
-                  command=self._uninstall_service).pack(fill="x", pady=2)
+        # Удаление
+        del_frame = ttk.LabelFrame(tab3, text="Удаление", padding=10)
+        del_frame.pack(fill="x")
 
-        tk.Button(svc_frame, text="Удалить программу полностью",
+        tk.Button(del_frame, text="Удалить программу полностью",
                   font=("Arial", 10), bg="#c0392b", fg="white",
                   relief="flat", padx=10, pady=6,
                   command=self._uninstall).pack(fill="x", pady=2)
-
-        ttk.Label(tab3, text="Служба Windows работает от имени SYSTEM,\n"
-                  "её нельзя завершить из Диспетчера задач.",
-                  font=("Arial", 9), foreground="gray",
-                  justify="center").pack(pady=(5, 0))
 
     # --- Действия ---
     def _refresh_status(self):
@@ -1092,6 +1087,19 @@ class MainApp:
         else:
             self.btn_start.config(state="normal")
             self.btn_stop.config(state="disabled")
+
+        # Статус службы
+        svc_installed, svc_running = self._check_service_state()
+        if svc_installed:
+            if svc_running:
+                self.svc_status_var.set("Служба: запущена")
+                self.btn_service.config(text="Остановить службу")
+            else:
+                self.svc_status_var.set("Служба: остановлена")
+                self.btn_service.config(text="Запустить службу")
+        else:
+            self.svc_status_var.set("Служба не установлена")
+            self.btn_service.config(text="Установить службу")
 
     def _is_monitor_running(self) -> bool:
         """Проверяем, запущен ли монитор (по PID-файлу)."""
@@ -1204,8 +1212,43 @@ class MainApp:
         state = self.show_timer_var.get()
         self.cfg.config["show_timer"] = state
         self.cfg.save()
-        # Если монитор запущен, он подхватит изменение на следующем цикле
         log(f"show_timer set to {state}")
+
+    def _check_service_state(self):
+        """Возвращает (installed, running) для службы."""
+        try:
+            result = subprocess.run(
+                ["sc", "query", "TimeScreenControl"],
+                capture_output=True, text=True
+            )
+            installed = "FAILED" not in result.stdout and "1060" not in result.stdout
+            running = "RUNNING" in result.stdout
+            return installed, running
+        except Exception:
+            return False, False
+
+    def _toggle_service(self):
+        installed, running = self._check_service_state()
+        if installed:
+            if running:
+                # Остановить
+                if not is_admin():
+                    ctypes.windll.shell32.ShellExecuteW(
+                        None, "runas", sys.executable, "--uninstall-service", None, 1
+                    )
+                    return
+                subprocess.run(["sc", "stop", "TimeScreenControl"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                messagebox.showinfo("Служба", "Служба остановлена.")
+            else:
+                # Запустить
+                subprocess.run(["sc", "start", "TimeScreenControl"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                messagebox.showinfo("Служба", "Служба запущена.")
+        else:
+            # Установить
+            self._install_service()
+        self._refresh_status()
 
     def _kill_monitor(self):
         """Останавливает фоновый монитор по PID."""
