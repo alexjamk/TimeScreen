@@ -1,7 +1,9 @@
 """
 TimeScreen Control - GUI Parental Control Application
-Single .exe, multiple modes via command-line arguments.
-No console window (build with PyInstaller --windowed).
+Service-based architecture:
+  - Windows service (SYSTEM) = time monitor (headless, unkillable)
+  - User agent (autostart) = timer overlay + lock screen (GUI in user session)
+  - Communication via flag file: %PROGRAMDATA%\TimeScreen\lock_flag
 """
 
 import tkinter as tk
@@ -22,16 +24,19 @@ from pathlib import Path
 # Конфигурация
 # ---------------------------------------------------------------------------
 APP_NAME = "TimeScreen Control"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).parent
 else:
     BASE_DIR = Path(__file__).parent
 
-CONFIG_FILE = BASE_DIR / "pc_config.json"
-PID_FILE    = BASE_DIR / "monitor.pid"
-LOG_FILE    = BASE_DIR / "service.log"
+CONFIG_FILE   = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "pc_config.json"
+LOCK_FLAG     = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "lock_flag"
+PID_FILE      = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "monitor.pid"
+LOG_FILE      = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScreen" / "service.log"
+SERVICE_NAME  = "TimeScreenControl"
+INSTALL_DIR   = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
 
 # ---------------------------------------------------------------------------
 # Утилиты
@@ -39,6 +44,7 @@ LOG_FILE    = BASE_DIR / "service.log"
 
 def log(msg: str) -> None:
     try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"[{stamp}] {msg}\n")
@@ -51,29 +57,22 @@ def is_admin() -> bool:
     except Exception:
         return False
 
-def run_as_admin():
-    if sys.platform == "win32" and not is_admin():
-        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
-        sys.exit(0)
-
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def get_monitor_rects():
-    """Возвращает список (x, y, width, height) для каждого монитора через WinAPI."""
+    """Возвращает список (x, y, width, height) для каждого монитора."""
     rects = []
-
     def callback(hMonitor, hdc, lprcMonitor, dwData):
         r = lprcMonitor.contents
         rects.append((r.left, r.top, r.right - r.left, r.bottom - r.top))
         return 1
-
     MonitorEnumProc = ctypes.WINFUNCTYPE(
         ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
         ctypes.POINTER(wintypes.RECT), ctypes.c_double
     )
     ctypes.windll.user32.EnumDisplayMonitors(None, None, MonitorEnumProc(callback), 0)
-    return rects if rects else [(0, 0, 1920, 1080)]  # fallback
+    return rects if rects else [(0, 0, 1920, 1080)]
 
 # ---------------------------------------------------------------------------
 # Менеджер конфигурации
@@ -84,32 +83,32 @@ class ConfigManager:
         self.config = self.load()
 
     def load(self) -> dict:
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         if CONFIG_FILE.exists():
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     raw = json.load(f)
-                # Проверка целостности
                 stored_hash = raw.pop("_hash", None)
                 if stored_hash:
                     expected = self._compute_hash(raw)
                     if stored_hash != expected:
-                        # Файл подделан вручную → lockdown
                         log("CONFIG TAMPERED – entering lockdown")
                         return {"password_hash": None, "intervals": [],
                                 "enabled": True, "show_timer": False,
-                                "_tampered": True}
+                                "controlled_users": [], "_tampered": True}
                 return raw
             except Exception:
                 pass
-        return {"password_hash": None, "intervals": [], "enabled": True, "show_timer": True}
+        return {"password_hash": None, "intervals": [], "enabled": True,
+                "show_timer": True, "controlled_users": []}
 
     def _compute_hash(self, data: dict) -> str:
-        """Хэш конфига для проверки целостности (без поля _hash)."""
         clean = {k: v for k, v in data.items() if k != "_hash"}
         payload = json.dumps(clean, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
     def save(self):
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = self.config.copy()
         data.pop("_tampered", None)
         data["_hash"] = self._compute_hash(data)
@@ -121,23 +120,13 @@ class ConfigManager:
         self.save()
 
     def check_password(self, pwd: str) -> bool:
-        # При подделке конфига пароль никогда не принимается
         if self.config.get("_tampered"):
             return False
         if not self.config.get("password_hash"):
             return True
         return self.config["password_hash"] == hash_password(pwd)
 
-    def is_allowed_time(self) -> bool:
-        # При подделке конфига — всегда заблокировано
-        if self.config.get("_tampered"):
-            return False
-        if not self.config.get("enabled", True):
-            return True
-        return self.config["password_hash"] == hash_password(pwd)
-
     def set_intervals(self, intervals: list):
-        # intervals: ["HH:MM-HH:MM", ...]
         self.config["intervals"] = intervals
         self.save()
 
@@ -145,17 +134,25 @@ class ConfigManager:
         self.config["enabled"] = state
         self.save()
 
-    # --- Grace-период (отсрочка блокировки после разблокировки) ---
+    def set_controlled_users(self, users: list):
+        self.config["controlled_users"] = users
+        self.save()
+
+    def is_controlled_user(self) -> bool:
+        controlled = self.config.get("controlled_users", [])
+        if not controlled:
+            return True  # Пустой список = контролировать всех
+        current = os.environ.get("USERNAME", "")
+        return current.lower() in [u.lower() for u in controlled]
+
     GRACE_MINUTES = 10
 
     def set_grace(self):
-        """Установить grace-период на GRACE_MINUTES минут от текущего момента."""
         until = datetime.datetime.now() + datetime.timedelta(minutes=self.GRACE_MINUTES)
         self.config["grace_until"] = until.isoformat()
         self.save()
 
     def is_in_grace(self) -> bool:
-        """Находимся ли в grace-периоде (после ручной разблокировки)."""
         ts = self.config.get("grace_until")
         if not ts:
             return False
@@ -166,17 +163,17 @@ class ConfigManager:
             return False
 
     def clear_grace(self):
-        """Сбросить grace-период."""
         self.config.pop("grace_until", None)
         self.save()
 
     def is_allowed_time(self) -> bool:
+        if self.config.get("_tampered"):
+            return False
         if not self.config.get("enabled", True):
             return True
         intervals = self.config.get("intervals", [])
         if not intervals:
             return True
-
         now = datetime.datetime.now().time()
         for interval in intervals:
             try:
@@ -194,51 +191,35 @@ class ConfigManager:
         return False
 
     def get_next_event(self):
-        """Return (seconds_until_event, event_type) or (None, None)."""
         intervals = self.config.get("intervals", [])
         if not intervals or not self.config.get("enabled", True):
             return None, None
-
         now_dt = datetime.datetime.now()
         now_t = now_dt.time()
         today = now_dt.date()
-
-        next_lock   = None
-        next_unlock = None
-
+        next_lock = None; next_unlock = None
         for interval in intervals:
             try:
                 start_str, end_str = interval.split("-")
                 start = datetime.datetime.strptime(start_str.strip(), "%H:%M").time()
                 end   = datetime.datetime.strptime(end_str.strip(), "%H:%M").time()
-
-                # Сегодняшние границы
                 s_dt = datetime.datetime.combine(today, start)
                 e_dt = datetime.datetime.combine(today, end)
-
                 if start > end:
-                    # Интервал через полночь: разблокирован от start до полуночи И от полуночи до end
-                    # Сейчас разблокировано?
                     if now_t >= start or now_t <= end:
-                        # Разблокирован -> следующее событие: блокировка в end (завтра если end уже прошёл)
                         if now_t >= start:
-                            # после start, блокировка завтра в end
                             candidate = e_dt + datetime.timedelta(days=1)
                         else:
-                            # до end, блокировка сегодня в end (но end уже прошёл сегодня?)
-                            # Если сейчас между 00:00 и end, то end сегодня ещё впереди
                             candidate = e_dt
                         if candidate > now_dt and (next_lock is None or candidate < next_lock):
                             next_lock = candidate
                     else:
-                        # Заблокирован -> разблокировка в start (сегодня или завтра)
                         candidate = s_dt
                         if candidate <= now_dt:
                             candidate += datetime.timedelta(days=1)
                         if next_unlock is None or candidate < next_unlock:
                             next_unlock = candidate
                 else:
-                    # Обычный интервал
                     if now_t < start:
                         candidate = s_dt
                         if next_unlock is None or candidate < next_unlock:
@@ -248,14 +229,11 @@ class ConfigManager:
                         if now_dt < candidate and (next_lock is None or candidate < next_lock):
                             next_lock = candidate
                     else:
-                        # after end, unlock tomorrow
                         candidate = s_dt + datetime.timedelta(days=1)
                         if next_unlock is None or candidate < next_unlock:
                             next_unlock = candidate
             except Exception:
                 continue
-
-        # Check current state
         allowed = self.is_allowed_time()
         if allowed and next_lock:
             return int((next_lock - now_dt).total_seconds()), "lock"
@@ -267,17 +245,14 @@ class ConfigManager:
 
 
 # ---------------------------------------------------------------------------
-# Экран блокировки (полноэкранный)
+# Экран блокировки
 # ---------------------------------------------------------------------------
 
 class LockScreen:
-    """Блокирует ВСЕ мониторы. Каждый монитор — отдельное полноэкранное окно."""
-
     def __init__(self):
         try:
             self.cfg = ConfigManager()
             self._windows = []
-
             monitors = get_monitor_rects()
             for i, (x, y, w, h) in enumerate(monitors):
                 win = tk.Toplevel() if i > 0 else tk.Tk()
@@ -288,63 +263,37 @@ class LockScreen:
                 win.configure(bg="#1a1a2e")
                 win.protocol("WM_DELETE_WINDOW", lambda: None)
                 self._windows.append(win)
-
-            # UI строится только на первом (главном) окне
             self.root = self._windows[0]
             self._build_ui()
-
-            # Остальные окна — просто чёрный фон с текстом
             for win in self._windows[1:]:
-                tk.Label(
-                    win, text="КОМПЬЮТЕР\nЗАБЛОКИРОВАН",
-                    font=("Arial", 36, "bold"), fg="#e94560", bg="#1a1a2e", justify="center"
-                ).place(relx=0.5, rely=0.5, anchor="center")
+                tk.Label(win, text="КОМПЬЮТЕР\nЗАБЛОКИРОВАН",
+                         font=("Arial", 36, "bold"), fg="#e94560", bg="#1a1a2e",
+                         justify="center").place(relx=0.5, rely=0.5, anchor="center")
         except Exception as e:
             log(f"LockScreen init error: {e}")
-            # Аварийный выход — убиваем процессы и выходим
-            try:
-                for w in getattr(self, '_windows', []):
-                    try:
-                        w.destroy()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
             raise
 
     def _build_ui(self):
         center = tk.Frame(self.root, bg="#1a1a2e")
         center.place(relx=0.5, rely=0.5, anchor="center")
-
-        tk.Label(
-            center, text="КОМПЬЮТЕР ЗАБЛОКИРОВАН",
-            font=("Arial", 30, "bold"), fg="#e94560", bg="#1a1a2e"
-        ).pack(pady=(0, 15))
-
-        tk.Label(
-            center,
-            text="Использование компьютера запрещено в это время.\nОбратитесь к администратору.",
-            font=("Arial", 14), fg="#ffffff", bg="#1a1a2e", justify="center"
-        ).pack(pady=(0, 25))
-
+        tk.Label(center, text="КОМПЬЮТЕР ЗАБЛОКИРОВАН",
+                 font=("Arial", 30, "bold"), fg="#e94560", bg="#1a1a2e").pack(pady=(0, 15))
+        tk.Label(center, text="Использование компьютера запрещено в это время.\nОбратитесь к администратору.",
+                 font=("Arial", 14), fg="#ffffff", bg="#1a1a2e", justify="center").pack(pady=(0, 25))
         tk.Label(center, text="Пароль администратора:", font=("Arial", 12),
                  fg="#aaaaaa", bg="#1a1a2e").pack(anchor="w", pady=(0, 5))
-
         self.pwd_var = tk.StringVar()
         pwd_entry = tk.Entry(center, textvariable=self.pwd_var, show="*",
                              font=("Arial", 14), width=25, justify="center")
         pwd_entry.pack(pady=(0, 10))
         pwd_entry.bind("<Return>", lambda e: self._try_unlock())
         pwd_entry.focus_set()
-
         self.status_lbl = tk.Label(center, text="", font=("Arial", 11),
                                    fg="#e94560", bg="#1a1a2e")
         self.status_lbl.pack(pady=(0, 15))
-
         tk.Button(center, text="Разблокировать", font=("Arial", 13, "bold"),
                   bg="#0f3460", fg="white", activebackground="#16213e",
                   width=20, height=2, command=self._try_unlock).pack(pady=5)
-
         btn_row = tk.Frame(center, bg="#1a1a2e")
         btn_row.pack(pady=15)
         tk.Button(btn_row, text="Выключить ПК", font=("Arial", 11),
@@ -353,16 +302,10 @@ class LockScreen:
         tk.Button(btn_row, text="Перезагрузить", font=("Arial", 11),
                   bg="#e67e22", fg="white", width=15, height=2,
                   command=self._restart).pack(side="left", padx=8)
-
-        # Кнопка админа (UAC)
-        tk.Button(
-            center, text="Войти как администратор Windows",
-            font=("Arial", 10), bg="#8e44ad", fg="white",
-            relief="flat", padx=10, pady=4,
-            command=self._admin_unlock
-        ).pack(pady=(10, 0))
-
-        # Часы
+        tk.Button(center, text="Войти как администратор Windows",
+                  font=("Arial", 10), bg="#8e44ad", fg="white",
+                  relief="flat", padx=10, pady=4,
+                  command=self._admin_unlock).pack(pady=(10, 0))
         self.clock_lbl = tk.Label(self.root, text="", font=("Arial", 13),
                                   fg="#ffffff", bg="#1a1a2e")
         self.clock_lbl.place(relx=0.5, rely=0.95, anchor="center")
@@ -376,31 +319,28 @@ class LockScreen:
     def _try_unlock(self):
         pwd = self.pwd_var.get()
         if self.cfg.check_password(pwd):
-            self.cfg.set_grace()  # <-- 10 минут без повторной блокировки
+            self.cfg.set_grace()
+            # Удаляем флаг блокировки
+            LOCK_FLAG.unlink(missing_ok=True)
             self._destroy_all()
         else:
             self.status_lbl.config(text="Неверный пароль!")
             self.pwd_var.set("")
 
     def _admin_unlock(self):
-        """Разблокировка с правами администратора Windows."""
         if is_admin():
             cfg = ConfigManager()
             if cfg.config.get("_tampered"):
-                # Конфиг повреждён — удаляем, открываем настройки
                 CONFIG_FILE.unlink(missing_ok=True)
                 subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.Popen([sys.executable], creationflags=0x08000000)
                 self._destroy_all()
             else:
-                # Конфиг цел — обычная разблокировка с grace-периодом
                 self.cfg.set_grace()
+                LOCK_FLAG.unlink(missing_ok=True)
                 self._destroy_all()
         else:
-            # Запрашиваем повышение через UAC
             ctypes.windll.shell32.ShellExecuteW(
                 None, "runas", sys.executable, "--recovery", None, 1
             )
@@ -425,12 +365,10 @@ class LockScreen:
 
 
 # ---------------------------------------------------------------------------
-# Таймер-оверлей (маленькое окно-индикатор)
+# Таймер-оверлей
 # ---------------------------------------------------------------------------
 
 class TimerOverlay:
-    """Всегда поверх остальных окон. Зелёный — доступ, красный — блокировка."""
-
     def __init__(self):
         self.cfg = ConfigManager()
         self.root = tk.Tk()
@@ -439,54 +377,29 @@ class TimerOverlay:
         self.root.attributes("-topmost", True)
         self.root.configure(bg="black")
         self.root.wm_attributes("-transparentcolor", "black")
-
         self.lbl = tk.Label(self.root, text="", font=("Consolas", 14, "bold"),
                             bg="black", fg="#00ff00", padx=12, pady=6)
         self.lbl.pack()
-
-        # Позиция: правый верхний угол
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"+{sw - 280}+10")
-
         self._tick = 0
         self._update()
         self.root.mainloop()
 
-    def _watchdog(self):
-        """Если монитор умер — перезапустить его."""
-        try:
-            if not PID_FILE.exists():
-                return
-            pid = int(PID_FILE.read_text().strip())
-            # Проверяем жив ли процесс
-            result = subprocess.run(
-                ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
-                capture_output=True, text=True
-            )
-            if str(pid) not in result.stdout:
-                log("Timer: monitor dead – restarting")
-                exe = sys.executable
-                subprocess.Popen([exe, "--monitor"], creationflags=0x08000000)
-        except Exception:
-            pass
-
     def _update(self):
         self._tick += 1
-
-        # --- Watchdog: проверяем жив ли монитор (каждые 10 сек) ---
+        # Watchdog: проверяем PID службы
         if self._tick % 10 == 0:
             self._watchdog()
-
         try:
-            self.cfg = ConfigManager()  # Перечитываем конфиг
+            self.cfg = ConfigManager()
         except Exception:
             pass
 
         if self.cfg.is_in_grace():
-            # В grace-периоде — показываем отсрочку
             text = "Отсрочка (grace-период)"
-            self.lbl.config(fg="#ffff00")  # Жёлтый
+            self.lbl.config(fg="#ffff00")
         elif self.cfg.config.get("_tampered"):
             text = "КОНФИГ ПОВРЕЖДЁН!"
             self.lbl.config(fg="#ff0000")
@@ -495,19 +408,14 @@ class TimerOverlay:
             if allowed:
                 secs, evt = self.cfg.get_next_event()
                 if evt is None and not self.cfg.config.get("intervals"):
-                    # Расписание не настроено — подсказываем
                     text = "Расписание не задано"
-                    self.lbl.config(fg="#888888")  # Серый
+                    self.lbl.config(fg="#888888")
                 elif secs and evt == "lock":
-                    h = secs // 3600
-                    m = (secs % 3600) // 60
-                    s = secs % 60
+                    h = secs // 3600; m = (secs % 3600) // 60; s = secs % 60
                     text = f"До блокировки: {h:02d}:{m:02d}:{s:02d}"
                     self.lbl.config(fg="#00ff00")
                 elif evt == "unlock":
-                    h = secs // 3600
-                    m = (secs % 3600) // 60
-                    s = secs % 60
+                    h = secs // 3600; m = (secs % 3600) // 60; s = secs % 60
                     text = f"Блокировка до: {h:02d}:{m:02d}:{s:02d}"
                     self.lbl.config(fg="#00ff00")
                 else:
@@ -520,67 +428,90 @@ class TimerOverlay:
         self.lbl.config(text=text)
         self.root.after(1000, self._update)
 
+    def _watchdog(self):
+        try:
+            if not PID_FILE.exists():
+                return
+            pid = int(PID_FILE.read_text().strip())
+            result = subprocess.run(
+                ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
+                capture_output=True, text=True
+            )
+            if str(pid) not in result.stdout:
+                log("Timer: monitor dead – restarting service")
+                subprocess.run(["sc", "start", SERVICE_NAME],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
-# Фоновый монитор (без окна, запускает LockScreen при необходимости)
+# Служебный монитор (только проверка времени, без GUI)
 # ---------------------------------------------------------------------------
 
 def run_monitor():
-    """Фоновый процесс: проверяет время, запускает LockScreen."""
-    # Сохраняем PID для возможности остановки извне
+    """Фоновый монитор (запускается либо службой, либо вручную)."""
     try:
+        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
         PID_FILE.write_text(str(os.getpid()))
     except Exception:
         pass
-
     log("Monitor started")
-    exe = sys.executable
-
-    # Запускаем таймер-оверлей только если флаг show_timer включен
-    timer_proc = None
-    cfg = ConfigManager()
-    if cfg.config.get("show_timer", True):
-        timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
-        log(f"Timer process started (PID {timer_proc.pid})")
-
     try:
-        loop_count = 0
         while True:
             cfg = ConfigManager()
-            loop_count += 1
-
-            # --- Watchdog: проверяем, жив ли таймер (каждые 30 сек) ---
-            if loop_count % 6 == 0 and timer_proc is not None:
-                if timer_proc.poll() is not None:
-                    log("Timer died – restarting")
-                    timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
-
             if not cfg.config.get("enabled", True):
                 time.sleep(5)
                 continue
-
-            # Реакция на изменение флага show_timer
-            show = cfg.config.get("show_timer", True)
-            if show and timer_proc is None:
-                timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
-                log("Timer started (flag enabled)")
-            elif not show and timer_proc is not None:
-                timer_proc.terminate()
-                try:
-                    timer_proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    timer_proc.kill()
-                timer_proc = None
-                log("Timer stopped (flag disabled)")
-
-            # Проверка grace-периода (10 минут после ручной разблокировки)
             if cfg.is_in_grace():
                 time.sleep(5)
                 continue
-
+            if not cfg.is_controlled_user():
+                time.sleep(5)
+                continue
             if not cfg.is_allowed_time():
-                log("Time blocked – launching lock screen")
-                # Закрываем таймер
+                # Записываем флаг блокировки — пользовательский агент покажет экран
+                try:
+                    LOCK_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                    LOCK_FLAG.write_text("1")
+                except Exception:
+                    pass
+            else:
+                LOCK_FLAG.unlink(missing_ok=True)
+            time.sleep(5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        LOCK_FLAG.unlink(missing_ok=True)
+        log("Monitor stopped")
+
+
+# ---------------------------------------------------------------------------
+# Пользовательский агент (таймер + блокировка по флагу)
+# ---------------------------------------------------------------------------
+
+def run_user_agent():
+    """Агент в сессии пользователя: таймер + проверка флага блокировки."""
+    exe = sys.executable
+    cfg = ConfigManager()
+
+    # Запускаем таймер если нужно
+    timer_proc = None
+    if cfg.config.get("show_timer", True):
+        timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+
+    log("User agent started")
+    try:
+        while True:
+            cfg = ConfigManager()
+
+            # Проверяем флаг блокировки
+            if LOCK_FLAG.exists() and cfg.is_controlled_user():
+                log("Lock flag detected – launching lock screen")
                 if timer_proc is not None:
                     timer_proc.terminate()
                     try:
@@ -588,42 +519,36 @@ def run_monitor():
                     except subprocess.TimeoutExpired:
                         timer_proc.kill()
                     timer_proc = None
-                # Показываем экран блокировки
-                try:
-                    lock_proc = subprocess.Popen([exe, "--lock"], creationflags=0x08000000)
-                    lock_proc.wait()
-                except Exception as e:
-                    log(f"ERROR launching lock screen: {e}")
-                log("Lock screen closed – restarting timer")
-                # Перезапускаем таймер (если флаг включен)
-                cfg2 = ConfigManager()
-                if cfg2.config.get("show_timer", True):
+                lock_proc = subprocess.Popen([exe, "--lock"], creationflags=0x08000000)
+                lock_proc.wait()
+                log("Lock screen closed")
+                if cfg.config.get("show_timer", True):
                     timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
 
-            time.sleep(5)
+            time.sleep(3)
     except KeyboardInterrupt:
         pass
     finally:
         if timer_proc is not None:
             timer_proc.terminate()
-        try:
-            PID_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
-        log("Monitor stopped")
+        log("User agent stopped")
 
 
 # ---------------------------------------------------------------------------
-# Установщик (для пользователя, без прав админа)
+# Служба Windows
 # ---------------------------------------------------------------------------
 
 def _install_windows_service():
-    """Установка Windows-службы от имени SYSTEM (через VBS-обёртку)."""
-    install_dir = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
-    install_dir.mkdir(parents=True, exist_ok=True)
+    """Установка Windows-службы (требует прав администратора)."""
+    if not is_admin():
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, "--install-service", None, 1
+        )
+        return
 
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
     exe_path = Path(sys.executable)
-    target_exe = install_dir / exe_path.name
+    target_exe = INSTALL_DIR / exe_path.name
 
     # Копируем exe
     if exe_path.resolve() != target_exe.resolve():
@@ -632,33 +557,29 @@ def _install_windows_service():
         except Exception:
             pass
 
-    # VBS-обёртка: wscript ждёт завершения exe, поэтому служба не гаснет
-    service_vbs = install_dir / "run_service.vbs"
+    # VBS обёртка: wscript.exe ждёт завершения exe (True), служба не гаснет
+    service_vbs = INSTALL_DIR / "run_service.vbs"
     with open(service_vbs, "w") as f:
-        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --monitor", 0, True\n')
-
-    service_name = "TimeScreenControl"
-    display_name = "TimeScreen - Родительский контроль"
+        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --service-daemon", 0, True\n')
 
     try:
-        subprocess.run(["sc", "stop", service_name],
+        subprocess.run(["sc", "stop", SERVICE_NAME],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(2)
-        subprocess.run(["sc", "delete", service_name],
+        subprocess.run(["sc", "delete", SERVICE_NAME],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1)
         result = subprocess.run(
-            ["sc", "create", service_name,
+            ["sc", "create", SERVICE_NAME,
              "binPath=", f'wscript.exe "{service_vbs}"',
-             "DisplayName=", display_name,
+             "DisplayName=", "TimeScreen - Родительский контроль",
              "start=", "auto"],
             capture_output=True, text=True
         )
         if result.returncode == 0:
-            subprocess.run(["sc", "start", service_name],
+            subprocess.run(["sc", "start", SERVICE_NAME],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            messagebox.showinfo("Готово",
-                                f"Служба «{display_name}» установлена и запущена.")
+            messagebox.showinfo("Готово", "Служба установлена и запущена.")
         else:
             messagebox.showerror("Ошибка", f"Не удалось создать службу:\n{result.stderr}")
     except Exception as e:
@@ -666,34 +587,31 @@ def _install_windows_service():
 
 
 def _uninstall_windows_service():
-    """Удаление Windows-службы."""
-    service_name = "TimeScreenControl"
+    if not is_admin():
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, "--uninstall-service", None, 1
+        )
+        return
     try:
         for _ in range(3):
-            subprocess.run(["sc", "stop", service_name],
+            subprocess.run(["sc", "stop", SERVICE_NAME],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(2)
-        result = subprocess.run(["sc", "delete", service_name],
-                                capture_output=True, text=True)
-        if result.returncode == 0:
-            messagebox.showinfo("Готово", "Служба удалена.")
-        else:
-            # Пробуем принудительно
-            subprocess.run(["sc", "delete", service_name],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            messagebox.showinfo("Готово", "Служба удалена (возможно, потребуется перезагрузка).")
+        subprocess.run(["sc", "delete", SERVICE_NAME],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        messagebox.showinfo("Готово", "Служба удалена.")
     except Exception as e:
         messagebox.showerror("Ошибка", str(e))
 
 
+# ---------------------------------------------------------------------------
+# Установщик пользователя
+# ---------------------------------------------------------------------------
+
 def _stop_monitor_process():
-    """Останавливает фоновый монитор и таймер где бы они ни были запущены."""
     my_pid = os.getpid()
     my_name = Path(sys.executable).name
-
-    # 1. Убить по PID-файлу (ищем в стандартной папке установки)
-    install_pid_file = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen" / "monitor.pid"
-    for pid_path in (PID_FILE, install_pid_file):
+    for pid_path in (PID_FILE, INSTALL_DIR / "monitor.pid"):
         try:
             if pid_path.exists():
                 pid = int(pid_path.read_text().strip())
@@ -703,217 +621,30 @@ def _stop_monitor_process():
                 pid_path.unlink(missing_ok=True)
         except Exception:
             pass
-
-    # 2. Убить все экземпляры нашего exe КРОМЕ текущего
-    subprocess.run(
-        ["taskkill", "/f", "/im", my_name, "/fi", f"PID ne {my_pid}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    # И старый ParentalControl.exe
-    subprocess.run(
-        ["taskkill", "/f", "/im", "ParentalControl.exe"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    # И wscript (VBS-хост)
+    subprocess.run(["taskkill", "/f", "/im", my_name, "/fi", f"PID ne {my_pid}"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
 
 
-def _run_cleanup_bat(install_dir: Path):
-    """Создаёт и запускает отложенный .bat для удаления папки после выхода текущего процесса."""
+def _run_cleanup_bat(directory: Path):
     my_pid = os.getpid()
     tmp_bat = Path(os.environ["TEMP"]) / "_tsc_cleanup.bat"
     with open(tmp_bat, "w") as f:
         f.write(f'''@echo off
 :wait
 tasklist /fi "PID eq {my_pid}" 2>nul | find "{my_pid}" >nul
-if not errorlevel 1 (
-    timeout /t 1 >nul
-    goto wait
-)
-sc stop TimeScreenControl 2>nul
-sc delete TimeScreenControl 2>nul
-rmdir /s /q "{install_dir}" 2>nul
+if not errorlevel 1 (timeout /t 1 >nul & goto wait)
+sc stop {SERVICE_NAME} 2>nul
+sc delete {SERVICE_NAME} 2>nul
+rmdir /s /q "{directory}" 2>nul
 del "%~f0" 2>nul
 ''')
     subprocess.Popen(["cmd", "/c", str(tmp_bat)], creationflags=0x08000000)
-    log(f"Cleanup batch started, will remove {install_dir} after exit")
-
-
-def install_user():
-    """Установка в %LOCALAPPDATA%\\TimeScreen, ярлыки, автозагрузка."""
-    install_dir = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
-    install_dir.mkdir(parents=True, exist_ok=True)
-
-    exe_path = Path(sys.executable)
-    target_exe = install_dir / exe_path.name
-
-    # Останавливаем монитор перед копированием (файл может быть занят)
-    _stop_monitor_process()
-
-    # --- Удаляем СТАРУЮ установку (v1.x) если есть ---
-    old_install_dir = Path(os.environ["LOCALAPPDATA"]) / "ParentalControl"
-    if old_install_dir.exists():
-        try:
-            shutil.rmtree(str(old_install_dir), ignore_errors=True)
-        except Exception:
-            pass
-    old_startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "ParentalControl.lnk"
-    old_startup.unlink(missing_ok=True)
-    desktop = Path.home() / "Desktop"
-    for old_name in ["Родительский контроль - Админ.lnk", "Родительский контроль - Защита.lnk"]:
-        (desktop / old_name).unlink(missing_ok=True)
-
-    # Копируем себя
-    if exe_path.resolve() != target_exe.resolve():
-        try:
-            shutil.copy2(str(exe_path), str(target_exe))
-            log(f"Copied exe to {target_exe}")
-        except PermissionError:
-            # Файл занят — пробуем удалить и скопировать заново
-            _stop_monitor_process()
-            time.sleep(0.5)
-            try:
-                target_exe.unlink(missing_ok=True)
-                shutil.copy2(str(exe_path), str(target_exe))
-                log(f"Re-copied exe to {target_exe}")
-            except Exception as e:
-                log(f"Copy failed: {e}")
-                messagebox.showerror(
-                    "Ошибка копирования",
-                    "Не удалось скопировать программу — файл занят.\n"
-                    "Перезагрузите компьютер и попробуйте снова."
-                )
-                return
-    else:
-        log("Already running from install dir, skipping copy")
-
-    # VBS для скрытого запуска монитора
-    vbs = install_dir / "run_hidden.vbs"
-    with open(vbs, "w") as f:
-        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --monitor", 0, False\n')
-
-    # Автозагрузка
-    startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-    startup_dir.mkdir(parents=True, exist_ok=True)
-    startup_link = startup_dir / "TimeScreen.lnk"
-    _create_shortcut(
-        link_path=startup_link,
-        target="wscript.exe",
-        args=f'"{vbs}"',
-        workdir=str(install_dir),
-        desc="TimeScreen Control - монитор"
-    )
-
-    # Ярлыки на рабочем столе
-    desktop = Path.home() / "Desktop"
-
-    _create_shortcut(
-        link_path=desktop / "TimeScreen - Настройки.lnk",
-        target=str(target_exe),
-        args="",
-        workdir=str(install_dir),
-        desc="TimeScreen Control - настройки"
-    )
-
-    _create_shortcut(
-        link_path=desktop / "TimeScreen - Защита.lnk",
-        target=str(target_exe),
-        args="--toggle",
-        workdir=str(install_dir),
-        desc="Включить / выключить защиту"
-    )
-
-    # Монитор НЕ запускаем сразу — пользователь должен сначала настроить пароль и расписание.
-    # Автозагрузка добавит монитор при следующем входе в систему.
-
-    messagebox.showinfo(
-        "Установка завершена",
-        f"Программа установлена в:\n{install_dir}\n\n"
-        "На рабочем столе созданы ярлыки.\n"
-        "Монитор добавлен в автозагрузку (запустится при следующем входе).\n\n"
-        "ДАЛЕЕ:\n"
-        "1. Откройте «TimeScreen - Настройки»\n"
-        "2. Задайте пароль администратора\n"
-        "3. Добавьте расписание (например: 08:00-22:00)\n"
-        "4. Нажмите «Запустить защиту»"
-    )
-
-
-def uninstall_user():
-    """Удаление пользовательской установки."""
-    cfg = ConfigManager()
-
-    # Проверка прав: если пароль задан И пользователь НЕ администратор — требуем пароль
-    if cfg.config.get("password_hash") and not is_admin():
-        pwd = simpledialog.askstring("Подтверждение", "Введите пароль для удаления:", show="*")
-        if not pwd or not cfg.check_password(pwd):
-            if pwd:
-                messagebox.showerror("Ошибка", "Неверный пароль!")
-            return
-    elif cfg.config.get("password_hash"):
-        # Администратор — просто подтверждение (пароль уже задан, но админ может удалить)
-        pass
-    else:
-        # Нет пароля — любой может удалить после подтверждения
-        pass
-
-    if not messagebox.askyesno("Подтверждение", "Удалить TimeScreen Control полностью?"):
-        return
-
-    install_dir = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen"
-
-    # Убиваем процессы (включая таймер)
-    _stop_monitor_process()
-
-    desktop = Path.home() / "Desktop"
-
-    # --- Очистка СТАРОЙ установки (v1.x, %LOCALAPPDATA%\ParentalControl) ---
-    old_install_dir = Path(os.environ["LOCALAPPDATA"]) / "ParentalControl"
-    if old_install_dir.exists():
-        try:
-            shutil.rmtree(str(old_install_dir), ignore_errors=True)
-        except Exception:
-            pass
-    old_startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "ParentalControl.lnk"
-    old_startup.unlink(missing_ok=True)
-    # Удаляем и старые, и новые ярлыки
-    all_shortcuts = [
-        "Родительский контроль - Админ.lnk",
-        "Родительский контроль - Защита.lnk",
-        "TimeScreen - Настройки.lnk",
-        "TimeScreen - Защита.lnk",
-    ]
-    for name in all_shortcuts:
-        (desktop / name).unlink(missing_ok=True)
-
-    # --- Очистка НОВОЙ установки (%LOCALAPPDATA%\TimeScreen) ---
-    # Удаляем автозагрузку
-    startup_link = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "TimeScreen.lnk"
-    startup_link.unlink(missing_ok=True)
-
-    # Удаляем папку
-    if install_dir.exists():
-        for fname in ["pc_config.json", "monitor.pid", "service.log", "run_hidden.vbs"]:
-            (install_dir / fname).unlink(missing_ok=True)
-        # Если текущий exe находится в install_dir — не можем удалить себя,
-        # запускаем отложенный .bat для очистки после выхода
-        my_exe = Path(sys.executable).resolve()
-        if my_exe.parent.resolve() == install_dir.resolve():
-            _run_cleanup_bat(install_dir)
-        else:
-            try:
-                shutil.rmtree(str(install_dir), ignore_errors=True)
-            except Exception:
-                _run_cleanup_bat(install_dir)
-        log(f"Uninstalled, removed {install_dir}")
-
-    messagebox.showinfo("Удаление", "TimeScreen Control удалён.")
 
 
 def _create_shortcut(link_path: Path, target: str, args: str, workdir: str, desc: str):
-    """Создать .lnk ярлык через VBScript."""
     tmp_vbs = Path(os.environ["TEMP"]) / "_tsc_shortcut.vbs"
     args_escaped = args.replace('"', '""')
     target_escaped = target.replace('"', '""')
@@ -933,8 +664,129 @@ oLink.Save
     tmp_vbs.unlink(missing_ok=True)
 
 
+def install_user():
+    """Установка для текущего пользователя: ярлыки, автозагрузка агента."""
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    exe_path = Path(sys.executable)
+    target_exe = INSTALL_DIR / exe_path.name
+
+    _stop_monitor_process()
+
+    # Копируем себя
+    if exe_path.resolve() != target_exe.resolve():
+        try:
+            shutil.copy2(str(exe_path), str(target_exe))
+        except PermissionError:
+            _stop_monitor_process()
+            time.sleep(0.5)
+            try:
+                target_exe.unlink(missing_ok=True)
+                shutil.copy2(str(exe_path), str(target_exe))
+            except Exception:
+                pass
+
+    # VBS для скрытого запуска пользовательского агента
+    vbs = INSTALL_DIR / "run_agent.vbs"
+    with open(vbs, "w") as f:
+        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --user-agent", 0, False\n')
+
+    # Автозагрузка
+    startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup_dir.mkdir(parents=True, exist_ok=True)
+    _create_shortcut(
+        link_path=startup_dir / "TimeScreen.lnk",
+        target="wscript.exe",
+        args=f'"{vbs}"',
+        workdir=str(INSTALL_DIR),
+        desc="TimeScreen Control - агент"
+    )
+
+    # Ярлыки на рабочем столе
+    desktop = Path.home() / "Desktop"
+    _create_shortcut(
+        link_path=desktop / "TimeScreen - Настройки.lnk",
+        target=str(target_exe), args="", workdir=str(INSTALL_DIR),
+        desc="TimeScreen Control - настройки"
+    )
+    _create_shortcut(
+        link_path=desktop / "TimeScreen - Защита.lnk",
+        target=str(target_exe), args="--toggle", workdir=str(INSTALL_DIR),
+        desc="Включить / выключить защиту"
+    )
+
+    messagebox.showinfo(
+        "Установка завершена",
+        f"Программа установлена в:\n{INSTALL_DIR}\n\n"
+        "Ярлыки созданы на рабочем столе.\n"
+        "Агент добавлен в автозагрузку.\n\n"
+        "ДАЛЕЕ:\n"
+        "1. Откройте «TimeScreen - Настройки»\n"
+        "2. Задайте пароль и расписание\n"
+        "3. Нажмите «Запустить защиту»\n\n"
+        "Для максимальной защиты:\n"
+        "вкладка «Система» → «Установить службу»"
+    )
+
+
+def uninstall_user():
+    cfg = ConfigManager()
+    if cfg.config.get("password_hash") and not is_admin():
+        pwd = simpledialog.askstring("Подтверждение", "Введите пароль для удаления:", show="*")
+        if not pwd or not cfg.check_password(pwd):
+            if pwd:
+                messagebox.showerror("Ошибка", "Неверный пароль!")
+            return
+
+    if not messagebox.askyesno("Подтверждение", "Удалить TimeScreen Control полностью?"):
+        return
+
+    _stop_monitor_process()
+
+    desktop = Path.home() / "Desktop"
+    for name in ["TimeScreen - Настройки.lnk", "TimeScreen - Защита.lnk",
+                 "Родительский контроль - Админ.lnk", "Родительский контроль - Защита.lnk"]:
+        (desktop / name).unlink(missing_ok=True)
+
+    startup_link = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "TimeScreen.lnk"
+    startup_link.unlink(missing_ok=True)
+
+    # Удаляем службу если есть
+    try:
+        subprocess.run(["sc", "stop", SERVICE_NAME],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+        subprocess.run(["sc", "delete", SERVICE_NAME],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    # Удаляем флаги и конфиг
+    for f in (LOCK_FLAG, PID_FILE, CONFIG_FILE, LOG_FILE):
+        f.unlink(missing_ok=True)
+
+    # Удаляем папку
+    if INSTALL_DIR.exists():
+        my_exe = Path(sys.executable).resolve()
+        if my_exe.parent.resolve() == INSTALL_DIR.resolve():
+            _run_cleanup_bat(INSTALL_DIR)
+        else:
+            try:
+                shutil.rmtree(str(INSTALL_DIR), ignore_errors=True)
+            except Exception:
+                _run_cleanup_bat(INSTALL_DIR)
+
+    # Удаляем ProgramData
+    programdata_dir = CONFIG_FILE.parent
+    try:
+        shutil.rmtree(str(programdata_dir), ignore_errors=True)
+    except Exception:
+        pass
+
+    messagebox.showinfo("Удаление", "TimeScreen Control удалён.")
+
+
 # ---------------------------------------------------------------------------
-# Главное окно настроек (GUI)
+# Главное окно (GUI)
 # ---------------------------------------------------------------------------
 
 class MainApp:
@@ -942,11 +794,10 @@ class MainApp:
         self.cfg = ConfigManager()
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
-        self.root.geometry("500x480")
+        self.root.geometry("500x500")
         self.root.resizable(True, True)
-        self.root.minsize(460, 440)
+        self.root.minsize(460, 460)
 
-        # Стиль
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("TButton", padding=8, font=("Arial", 10))
@@ -957,32 +808,27 @@ class MainApp:
         self._build_ui()
         self._refresh_status()
 
-    # --- UI ---
     def _build_ui(self):
-        # Header
-        header = tk.Frame(self.root, bg="#2c3e50", height=55)
+        header = tk.Frame(self.root, bg="#2c3e50", height=50)
         header.pack(fill="x")
-        tk.Label(header, text=APP_NAME, font=("Arial", 16, "bold"),
-                 bg="#2c3e50", fg="white").pack(pady=4)
+        tk.Label(header, text=APP_NAME, font=("Arial", 15, "bold"),
+                 bg="#2c3e50", fg="white").pack(pady=3)
         tk.Label(header, text=f"v{APP_VERSION} — Родительский контроль",
                  font=("Arial", 9), bg="#2c3e50", fg="#bdc3c7").pack()
 
-        # Статус
         self.status_var = tk.StringVar()
         status_bar = tk.Frame(self.root, bg="#ecf0f1", height=26)
         status_bar.pack(fill="x", side="bottom")
         tk.Label(status_bar, textvariable=self.status_var, font=("Arial", 10),
                  bg="#ecf0f1", fg="#2c3e50", anchor="w", padx=10).pack(fill="x")
 
-        # Вкладки
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # ====== Вкладка 1: Настройки ======
+        # === Вкладка 1: Настройки ===
         tab1 = tk.Frame(nb, padx=15, pady=15)
         nb.add(tab1, text="  Настройки  ")
 
-        # Пароль
         sec_frame = ttk.LabelFrame(tab1, text="Безопасность", padding=10)
         sec_frame.pack(fill="x", pady=(0, 10))
         ttk.Label(sec_frame, text="Пароль администратора:").pack(anchor="w")
@@ -991,9 +837,8 @@ class MainApp:
         ttk.Button(sec_frame, text="Установить / Изменить",
                    command=self._set_password).pack(fill="x")
 
-        # Расписание
         sched_frame = ttk.LabelFrame(tab1, text="Расписание доступа", padding=10)
-        sched_frame.pack(fill="x")
+        sched_frame.pack(fill="x", pady=(0, 10))
         ttk.Label(sched_frame, text="Интервалы (ЧЧ:ММ-ЧЧ:ММ через запятую):").pack(anchor="w")
         ttk.Label(sched_frame, text="Пример: 08:00-22:00, 14:00-16:00",
                   font=("Arial", 9), foreground="gray").pack(anchor="w")
@@ -1002,7 +847,18 @@ class MainApp:
         ttk.Button(sched_frame, text="Сохранить расписание",
                    command=self._save_schedule).pack(fill="x")
 
-        # ====== Вкладка 2: Управление ======
+        # Контролируемые пользователи
+        users_frame = ttk.LabelFrame(tab1, text="Пользователи (Multi-user)", padding=10)
+        users_frame.pack(fill="x")
+        ttk.Label(users_frame, text="Имена пользователей Windows через запятую:").pack(anchor="w")
+        ttk.Label(users_frame, text="Оставьте пустым — контроль всех пользователей",
+                  font=("Arial", 9), foreground="gray").pack(anchor="w")
+        self.users_entry = ttk.Entry(users_frame, font=("Arial", 12))
+        self.users_entry.pack(fill="x", pady=(5, 8))
+        ttk.Button(users_frame, text="Сохранить список",
+                   command=self._save_users).pack(fill="x")
+
+        # === Вкладка 2: Управление ===
         tab2 = tk.Frame(nb, padx=15, pady=15)
         nb.add(tab2, text="  Управление  ")
 
@@ -1016,28 +872,24 @@ class MainApp:
         self.btn_start.pack(fill="x", pady=3)
 
         self.btn_stop = tk.Button(ctrl_frame, text="Остановить защиту",
-                                   font=("Arial", 11, "bold"), bg="#c0392b",
-                                   fg="white", relief="flat", padx=10, pady=8,
-                                   state="disabled", command=self._stop_protection)
+                                  font=("Arial", 11, "bold"), bg="#c0392b",
+                                  fg="white", relief="flat", padx=10, pady=8,
+                                  state="disabled", command=self._stop_protection)
         self.btn_stop.pack(fill="x", pady=3)
 
-        # Индикатор
         ind_frame = ttk.LabelFrame(tab2, text="Индикатор в углу экрана", padding=10)
         ind_frame.pack(fill="x")
         self.show_timer_var = tk.BooleanVar(value=self.cfg.config.get("show_timer", True))
         self.show_timer_cb = ttk.Checkbutton(
-            ind_frame,
-            text="Показывать индикатор обратного отсчёта",
-            variable=self.show_timer_var,
-            command=self._toggle_show_timer
+            ind_frame, text="Показывать индикатор обратного отсчёта",
+            variable=self.show_timer_var, command=self._toggle_show_timer
         )
         self.show_timer_cb.pack(anchor="w")
 
-        # ====== Вкладка 3: Система ======
+        # === Вкладка 3: Система ===
         tab3 = tk.Frame(nb, padx=15, pady=15)
         nb.add(tab3, text="  Система  ")
 
-        # Служба Windows
         svc_frame = ttk.LabelFrame(tab3, text="Служба Windows", padding=10)
         svc_frame.pack(fill="x", pady=(0, 10))
 
@@ -1051,10 +903,8 @@ class MainApp:
                                      command=self._toggle_service)
         self.btn_service.pack(fill="x", pady=2)
 
-        # Удаление
         del_frame = ttk.LabelFrame(tab3, text="Удаление", padding=10)
         del_frame.pack(fill="x")
-
         tk.Button(del_frame, text="Удалить программу полностью",
                   font=("Arial", 10), bg="#c0392b", fg="white",
                   relief="flat", padx=10, pady=6,
@@ -1079,16 +929,12 @@ class MainApp:
         if intervals:
             self.sched_entry.insert(0, ", ".join(intervals))
 
-        # Проверка, запущен ли монитор
-        running = self._is_monitor_running()
-        if running:
-            self.btn_start.config(state="disabled")
-            self.btn_stop.config(state="normal")
-        else:
-            self.btn_start.config(state="normal")
-            self.btn_stop.config(state="disabled")
+        self.users_entry.delete(0, "end")
+        controlled = self.cfg.config.get("controlled_users", [])
+        if controlled:
+            self.users_entry.insert(0, ", ".join(controlled))
 
-        # Статус службы
+        # Состояние службы
         svc_installed, svc_running = self._check_service_state()
         if svc_installed:
             if svc_running:
@@ -1101,13 +947,20 @@ class MainApp:
             self.svc_status_var.set("Служба не установлена")
             self.btn_service.config(text="Установить службу")
 
+        # Монитор
+        running = svc_running or self._is_monitor_running()
+        if running:
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="normal")
+        else:
+            self.btn_start.config(state="normal")
+            self.btn_stop.config(state="disabled")
+
     def _is_monitor_running(self) -> bool:
-        """Проверяем, запущен ли монитор (по PID-файлу)."""
         if not PID_FILE.exists():
             return False
         try:
             pid = int(PID_FILE.read_text().strip())
-            # Проверяем, существует ли процесс с таким PID
             result = subprocess.run(
                 ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
                 capture_output=True, text=True
@@ -1116,56 +969,70 @@ class MainApp:
         except Exception:
             return False
 
+    def _check_service_state(self):
+        try:
+            result = subprocess.run(
+                ["sc", "query", SERVICE_NAME],
+                capture_output=True, text=True
+            )
+            installed = "FAILED" not in result.stdout and "1060" not in result.stdout
+            running = "RUNNING" in result.stdout
+            return installed, running
+        except Exception:
+            return False, False
+
     def _set_password(self):
-        # Если пароль уже установлен — требуем старый
         if self.cfg.config.get("password_hash"):
             old = simpledialog.askstring("Подтверждение", "Введите СТАРЫЙ пароль:", show="*")
             if not old or not self.cfg.check_password(old):
                 if old:
                     messagebox.showerror("Ошибка", "Неверный старый пароль!")
                 return
-
         pwd = self.pass_entry.get().strip()
         if len(pwd) < 4:
             messagebox.showerror("Ошибка", "Пароль должен содержать минимум 4 символа.")
             return
         self.cfg.set_password(pwd)
         self.pass_entry.delete(0, "end")
-        messagebox.showinfo("Готово", "Пароль успешно установлен!")
+        messagebox.showinfo("Готово", "Пароль установлен!")
         self._refresh_status()
 
     def _save_schedule(self):
-        # Если пароль установлен — требуем подтверждение
         if self.cfg.config.get("password_hash"):
             pwd = simpledialog.askstring("Подтверждение", "Введите пароль для изменения расписания:", show="*")
             if not pwd or not self.cfg.check_password(pwd):
                 if pwd:
                     messagebox.showerror("Ошибка", "Неверный пароль!")
                 return
-
         raw = self.sched_entry.get().strip()
-        if not raw:
-            self.cfg.set_intervals([])
-            messagebox.showinfo("Готово", "Расписание очищено.")
-            self._refresh_status()
-            return
-
-        intervals = [x.strip() for x in raw.split(",") if x.strip()]
+        intervals = [x.strip() for x in raw.split(",") if x.strip()] if raw else []
         for iv in intervals:
-            if "-" not in iv or len(iv.split("-")) != 2:
-                messagebox.showerror("Ошибка", f"Неверный формат: {iv}\nИспользуйте: ЧЧ:ММ-ЧЧ:ММ")
+            if "-" not in iv:
+                messagebox.showerror("Ошибка", f"Неверный формат: {iv}")
                 return
-            parts = iv.split("-")
-            for p in parts:
-                try:
+            try:
+                for p in iv.split("-"):
                     datetime.datetime.strptime(p.strip(), "%H:%M")
-                except ValueError:
-                    messagebox.showerror("Ошибка", f"Неверное время: {p}")
-                    return
-
+            except ValueError:
+                messagebox.showerror("Ошибка", f"Неверное время: {iv}")
+                return
         self.cfg.set_intervals(intervals)
-        self.cfg.clear_grace()  # Сброс grace-периода при изменении расписания
-        messagebox.showinfo("Готово", f"Сохранено интервалов: {len(intervals)}")
+        self.cfg.clear_grace()
+        messagebox.showinfo("Готово", f"Сохранено: {len(intervals)} интервалов")
+        self._refresh_status()
+
+    def _save_users(self):
+        if self.cfg.config.get("password_hash"):
+            pwd = simpledialog.askstring("Подтверждение", "Введите пароль для изменения списка:", show="*")
+            if not pwd or not self.cfg.check_password(pwd):
+                if pwd:
+                    messagebox.showerror("Ошибка", "Неверный пароль!")
+                return
+        raw = self.users_entry.get().strip()
+        users = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
+        self.cfg.set_controlled_users(users)
+        msg = f"Контроль: {', '.join(users)}" if users else "Контроль: все пользователи"
+        messagebox.showinfo("Готово", msg)
         self._refresh_status()
 
     def _start_protection(self):
@@ -1177,115 +1044,61 @@ class MainApp:
             return
 
         self.cfg.set_enabled(True)
-        exe = sys.executable
-        subprocess.Popen([exe, "--monitor"], creationflags=0x08000000)
-        log("Monitor started from GUI")
-        messagebox.showinfo("Запущено", "Мониторинг времени активирован.\nВ углу экрана появится индикатор.")
+        installed, _ = self._check_service_state()
+        if installed:
+            # Запускаем службу
+            subprocess.run(["sc", "start", SERVICE_NAME],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            messagebox.showinfo("Запущено", "Служба запущена. Защита активна.")
+        else:
+            # Запускаем пользовательский агент
+            subprocess.Popen([sys.executable, "--user-agent"], creationflags=0x08000000)
+            messagebox.showinfo("Запущено", "Агент запущен. Защита активна.")
         self._refresh_status()
 
     def _stop_protection(self):
         pwd = simpledialog.askstring("Подтверждение", "Введите пароль для остановки:", show="*")
         if pwd and self.cfg.check_password(pwd):
             self.cfg.set_enabled(False)
-            # Убиваем монитор по PID
-            self._kill_monitor()
+            installed, _ = self._check_service_state()
+            if installed:
+                subprocess.run(["sc", "stop", SERVICE_NAME],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            LOCK_FLAG.unlink(missing_ok=True)
             messagebox.showinfo("Стоп", "Защита остановлена.")
             self._refresh_status()
         elif pwd:
             messagebox.showerror("Ошибка", "Неверный пароль!")
 
-    def _toggle(self):
-        if self.cfg.config.get("password_hash"):
-            pwd = simpledialog.askstring("Подтверждение", "Введите пароль для вкл/выкл защиты:", show="*")
-            if not pwd or not self.cfg.check_password(pwd):
-                if pwd:
-                    messagebox.showerror("Ошибка", "Неверный пароль!")
-                return
-
-        new_state = not self.cfg.config.get("enabled", True)
-        self.cfg.set_enabled(new_state)
-        state_text = "ВКЛЮЧЕНА" if new_state else "ВЫКЛЮЧЕНА"
-        messagebox.showinfo("Защита", f"Защита {state_text}.")
-        self._refresh_status()
-
     def _toggle_show_timer(self):
-        state = self.show_timer_var.get()
-        self.cfg.config["show_timer"] = state
+        self.cfg.config["show_timer"] = self.show_timer_var.get()
         self.cfg.save()
-        log(f"show_timer set to {state}")
-
-    def _check_service_state(self):
-        """Возвращает (installed, running) для службы."""
-        try:
-            result = subprocess.run(
-                ["sc", "query", "TimeScreenControl"],
-                capture_output=True, text=True
-            )
-            installed = "FAILED" not in result.stdout and "1060" not in result.stdout
-            running = "RUNNING" in result.stdout
-            return installed, running
-        except Exception:
-            return False, False
 
     def _toggle_service(self):
         installed, running = self._check_service_state()
         if installed:
             if running:
-                # Остановить
                 if not is_admin():
                     ctypes.windll.shell32.ShellExecuteW(
                         None, "runas", sys.executable, "--uninstall-service", None, 1
                     )
                     return
-                subprocess.run(["sc", "stop", "TimeScreenControl"],
+                subprocess.run(["sc", "stop", SERVICE_NAME],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 messagebox.showinfo("Служба", "Служба остановлена.")
             else:
-                # Запустить
-                subprocess.run(["sc", "start", "TimeScreenControl"],
+                subprocess.run(["sc", "start", SERVICE_NAME],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 messagebox.showinfo("Служба", "Служба запущена.")
         else:
-            # Установить
             self._install_service()
         self._refresh_status()
 
-    def _kill_monitor(self):
-        """Останавливает фоновый монитор по PID."""
-        try:
-            if PID_FILE.exists():
-                pid = int(PID_FILE.read_text().strip())
-                subprocess.run(["taskkill", "/f", "/pid", str(pid)],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                PID_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
-        # Дополнительно: убиваем все процессы, запущенные из того же exe (на случай если PID не помог)
-        exe_name = Path(sys.executable).name
-        subprocess.run(["taskkill", "/f", "/im", exe_name],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def _install(self):
-        install_user()
-        self._refresh_status()
-
     def _install_service(self):
-        """Установка как служба Windows (требует прав администратора)."""
-        if not is_admin():
-            # Пытаемся повысить права через UAC
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, "--install-service", None, 1
-            )
-            return
         _install_windows_service()
-
-    def _uninstall_service(self):
-        if not is_admin():
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, "--uninstall-service", None, 1
-            )
-            return
-        _uninstall_windows_service()
+        self._refresh_status()
 
     def _uninstall(self):
         uninstall_user()
@@ -1303,87 +1116,55 @@ def main():
     args = sys.argv[1:]
 
     if not args:
-        # Запуск без аргументов = главное окно
         app = MainApp()
         app.run()
     elif args[0] == "--lock":
         LockScreen().run()
+    elif args[0] == "--timer":
+        TimerOverlay()
+    elif args[0] == "--monitor":
+        run_monitor()
+    elif args[0] == "--service-daemon":
+        # Режим службы: только монитор времени (headless)
+        run_monitor()
+    elif args[0] == "--user-agent":
+        # Пользовательский агент: таймер + блокировка по флагу
+        run_user_agent()
     elif args[0] == "--recovery":
-        # Режим восстановления (запущен с правами админа)
         cfg = ConfigManager()
         if cfg.config.get("_tampered"):
             CONFIG_FILE.unlink(missing_ok=True)
         subprocess.run(["taskkill", "/f", "/im", "TimeScreenControl.exe"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if cfg.config.get("_tampered"):
-            messagebox.showinfo("Восстановление",
-                                "Конфигурация была повреждена и сброшена.\n"
-                                "Задайте новый пароль и расписание.")
-        else:
-            messagebox.showinfo("Вход администратора",
-                                "Вход выполнен с правами администратора.\n"
-                                "Включён grace-период 10 минут.")
+        messagebox.showinfo("Восстановление", "Конфигурация сброшена.\nЗадайте новый пароль и расписание.")
         app = MainApp()
         app.run()
-    elif args[0] == "--timer":
-        TimerOverlay()
-    elif args[0] == "--monitor":
-        run_monitor()
-    elif args[0] == "--service":
-        # Режим запуска от службы Windows — то же, что и монитор
-        run_monitor()
     elif args[0] == "--toggle":
         cfg = ConfigManager()
         if cfg.config.get("password_hash"):
-            # Запрашиваем пароль через simpledialog
-            root = tk.Tk()
-            root.withdraw()
-            pwd = simpledialog.askstring("Подтверждение", "Введите пароль для вкл/выкл защиты:", show="*")
+            root = tk.Tk(); root.withdraw()
+            pwd = simpledialog.askstring("Подтверждение", "Введите пароль:", show="*")
             root.destroy()
             if not pwd or not cfg.check_password(pwd):
                 if pwd:
-                    # Показываем ошибку через messagebox
-                    root2 = tk.Tk()
-                    root2.withdraw()
+                    root2 = tk.Tk(); root2.withdraw()
                     messagebox.showerror("Ошибка", "Неверный пароль!")
                     root2.destroy()
                 return
         cfg.set_enabled(not cfg.config.get("enabled", True))
-        # Показываем результат
-        root3 = tk.Tk()
-        root3.withdraw()
-        state_text = "ВКЛЮЧЕНА" if cfg.config["enabled"] else "ВЫКЛЮЧЕНА"
-        messagebox.showinfo("Защита", f"Защита {state_text}.")
+        root3 = tk.Tk(); root3.withdraw()
+        messagebox.showinfo("Защита", f"Защита {'ВКЛЮЧЕНА' if cfg.config['enabled'] else 'ВЫКЛЮЧЕНА'}.")
         root3.destroy()
+    elif args[0] == "--install-service":
+        _install_windows_service()
+    elif args[0] == "--uninstall-service":
+        _uninstall_windows_service()
     elif args[0] == "install-user":
         install_user()
     elif args[0] == "uninstall-user":
         uninstall_user()
-    elif args[0] == "--install-service":
-        if not is_admin():
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, "--install-service", None, 1
-            )
-            sys.exit(0)
-        _install_windows_service()
-    elif args[0] == "--uninstall-service":
-        if not is_admin():
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, "--uninstall-service", None, 1
-            )
-            sys.exit(0)
-        _uninstall_windows_service()
-    elif args[0] == "--help" or args[0] == "help":
-        print(f"{APP_NAME} v{APP_VERSION}")
-        print("  (без аргументов)    – главное окно настроек")
-        print("  --monitor           – фоновый мониторинг времени")
-        print("  --timer             – таймер-индикатор поверх окон")
-        print("  --toggle            – быстрое вкл/выкл защиты")
-        print("  install-user        – установить для пользователя")
-        print("  uninstall-user      – удалить программу")
     else:
-        print(f"Неизвестная команда: {args[0]}")
-        print("Используйте --help для справки")
+        print(f"Unknown command: {args[0]}")
 
 
 if __name__ == "__main__":
