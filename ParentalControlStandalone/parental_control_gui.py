@@ -587,6 +587,22 @@ def install_user():
 
 def uninstall_user():
     """Удаление пользовательской установки."""
+    cfg = ConfigManager()
+
+    # Проверка прав: если пароль задан И пользователь НЕ администратор — требуем пароль
+    if cfg.config.get("password_hash") and not is_admin():
+        pwd = simpledialog.askstring("Подтверждение", "Введите пароль для удаления:", show="*")
+        if not pwd or not cfg.check_password(pwd):
+            if pwd:
+                messagebox.showerror("Ошибка", "Неверный пароль!")
+            return
+    elif cfg.config.get("password_hash"):
+        # Администратор — просто подтверждение (пароль уже задан, но админ может удалить)
+        pass
+    else:
+        # Нет пароля — любой может удалить после подтверждения
+        pass
+
     if not messagebox.askyesno("Подтверждение", "Удалить TimeScreen Control полностью?"):
         return
 
