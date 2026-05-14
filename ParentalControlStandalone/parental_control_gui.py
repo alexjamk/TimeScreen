@@ -499,21 +499,37 @@ def run_monitor():
 # ---------------------------------------------------------------------------
 
 def _stop_monitor_process():
-    """Останавливает фоновый монитор и таймер (PID, не трогая текущий процесс)."""
+    """Останавливает фоновый монитор и таймер где бы они ни были запущены."""
     my_pid = os.getpid()
-    try:
-        if PID_FILE.exists():
-            pid = int(PID_FILE.read_text().strip())
-            if pid != my_pid:
-                subprocess.run(["taskkill", "/f", "/pid", str(pid)],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            PID_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
-    # Убиваем wscript (VBS-хост), но НЕ свой процесс
+    my_name = Path(sys.executable).name
+
+    # 1. Убить по PID-файлу (ищем в стандартной папке установки)
+    install_pid_file = Path(os.environ["LOCALAPPDATA"]) / "TimeScreen" / "monitor.pid"
+    for pid_path in (PID_FILE, install_pid_file):
+        try:
+            if pid_path.exists():
+                pid = int(pid_path.read_text().strip())
+                if pid != my_pid:
+                    subprocess.run(["taskkill", "/f", "/pid", str(pid)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                pid_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # 2. Убить все экземпляры нашего exe КРОМЕ текущего
+    subprocess.run(
+        ["taskkill", "/f", "/im", my_name, "/fi", f"PID ne {my_pid}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    # И старый ParentalControl.exe
+    subprocess.run(
+        ["taskkill", "/f", "/im", "ParentalControl.exe"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    # И wscript (VBS-хост)
     subprocess.run(["taskkill", "/f", "/im", "wscript.exe"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(0.7)
+    time.sleep(0.8)
 
 
 def _run_cleanup_bat(install_dir: Path):
