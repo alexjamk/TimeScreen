@@ -36,8 +36,13 @@ def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
         if cmd == "--service":
+            # Run as Windows Service (for pywin32 service wrapper)
             from service.daemon import run_service
             run_service()
+        elif cmd == "--locker-mode":
+            # Run lock screen directly (called by service)
+            from gui.lock_screen import run_lock_screen
+            run_lock_screen()
         elif cmd == "--version":
             print("TimeScreen Control v3.0")
         elif cmd == "--help":
@@ -47,6 +52,7 @@ TimeScreen Control - Parental Control System
 Usage:
   TimeScreenControl.exe              # Open settings (admin auth required)
   TimeScreenControl.exe --service    # Run as Windows service
+  TimeScreenControl.exe --locker-mode # Run lock screen (internal use)
   TimeScreenControl.exe --version    # Show version
   TimeScreenControl.exe --help       # Show this help
 
