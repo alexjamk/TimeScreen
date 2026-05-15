@@ -48,3 +48,7 @@ Thumbs.db
 # Installer packages (generated)
 ParentalControl_Installer_User/
 TimeScreen_Installer/
+
+# Release archives
+*.zip
+release_body.json
