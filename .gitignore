@@ -1,9 +1,24 @@
-```
-# Batch installers and uninstallers
-TimeScreenControl/install/*.bat
+# Build artifacts
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
 
-# Windows-specific files
+# Archives
+*.zip
+*.7z
+*.rar
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
 *.tmp
 *.log
-Thumbs.db
-```
+
+# Release metadata
+release_body.json
