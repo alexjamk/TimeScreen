@@ -1,0 +1,27 @@
+{
+  "password_hash": null,
+  "intervals": [
+    {
+      "start": "08:00",
+      "end": "20:00",
+      "days": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    }
+  ],
+  "enabled": false,
+  "controlled_users": [],
+  "show_timer": true,
+  "timer_position": [
+    200,
+    300
+  ],
+  "grace_until": null,
+  "_hash": "162ecdaf5a4c2375"
+}
