@@ -3,7 +3,7 @@ TimeScreen Control - GUI Parental Control Application
 Service-based architecture:
   - Windows service (SYSTEM) = time monitor (headless, unkillable)
   - User agent (autostart) = timer overlay + lock screen (GUI in user session)
-  - Communication via flag file: %PROGRAMDATA%\TimeScreen\lock_flag
+  - Communication via flag file: %PROGRAMDATA%\\TimeScreen\\lock_flag
 """
 
 import tkinter as tk
@@ -25,6 +25,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 APP_NAME = "TimeScreen Control"
 APP_VERSION = "2.1"
+_CREATE_NO_WINDOW = 0x08000000  # Подавляет мелькание консольных окон subprocess
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).parent
@@ -87,7 +88,7 @@ class ConfigManager:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         if CONFIG_FILE.exists():
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                     raw = json.load(f)
                 stored_hash = raw.pop("_hash", None)
                 if stored_hash:
@@ -311,11 +312,29 @@ class LockScreen:
                                   fg="#ffffff", bg="#1a1a2e")
         self.clock_lbl.place(relx=0.5, rely=0.95, anchor="center")
         self._update_clock()
+        self._check_auto_unlock()  # Запускаем периодическую проверку авторазблокировки
 
     def _update_clock(self):
         t = datetime.datetime.now().strftime("%H:%M:%S")
         self.clock_lbl.config(text=f"Текущее время: {t}")
         self.root.after(1000, self._update_clock)
+
+    def _check_auto_unlock(self):
+        """Периодически проверяет: не настал ли разрешённый период.
+        Если LOCK_FLAG исчез (служба удалила) или время стало разрешённым —
+        автоматически закрыть экран блокировки с grace-периодом."""
+        try:
+            cfg = ConfigManager()
+            if not LOCK_FLAG.exists() or cfg.is_allowed_time():
+                log("Auto-unlock: lock flag removed or time is now allowed")
+                cfg.set_grace()
+                LOCK_FLAG.unlink(missing_ok=True)
+                self._destroy_all()
+                return
+        except Exception:
+            pass
+        # Продолжаем проверять каждые 3 секунды
+        self.root.after(3000, self._check_auto_unlock)
 
     def _try_unlock(self):
         pwd = self.pwd_var.get()
@@ -376,10 +395,11 @@ class TimerOverlay:
         self.root.title("TimeScreen Timer")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.configure(bg="black")
-        self.root.wm_attributes("-transparentcolor", "black")
+        self.root.attributes("-alpha", 0.92)  # Полупрозрачность вместо transparentcolor (не мерцает)
+        self.root.configure(bg="#0a0a0a")
+        self.root.attributes("-toolwindow", True)  # Не показывать в панели задач
         self.lbl = tk.Label(self.root, text="", font=("Consolas", 14, "bold"),
-                            bg="black", fg="#00ff00", padx=12, pady=6)
+                            bg="#0a0a0a", fg="#00ff00", padx=12, pady=6)
         self.lbl.pack()
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
@@ -436,12 +456,14 @@ class TimerOverlay:
             pid = int(PID_FILE.read_text().strip())
             result = subprocess.run(
                 ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
-                capture_output=True, text=True
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
             if str(pid) not in result.stdout:
                 log("Timer: monitor dead – restarting service")
                 subprocess.run(["sc", "start", SERVICE_NAME],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception:
             pass
 
@@ -505,25 +527,25 @@ def _check_and_restart_agent():
         pid = int(AGENT_PID.read_text().strip())
         result = subprocess.run(
             ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
         )
         if str(pid) not in result.stdout:
             log("Agent dead – restarting via schtasks")
             agent_vbs = INSTALL_DIR / "run_agent.vbs"
             if agent_vbs.exists():
+                sp_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+                             "creationflags": subprocess.CREATE_NO_WINDOW}
                 subprocess.run(
                     ["schtasks", "/create", "/tn", "TimeScreenAgentRestart",
                      "/tr", f'wscript.exe "{agent_vbs}"',
-                     "/sc", "once", "/st", "00:00", "/it", "/f"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                     "/sc", "once", "/st", "00:00", "/it", "/f"], **sp_kwargs
                 )
                 subprocess.run(
-                    ["schtasks", "/run", "/tn", "TimeScreenAgentRestart"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    ["schtasks", "/run", "/tn", "TimeScreenAgentRestart"], **sp_kwargs
                 )
                 subprocess.run(
-                    ["schtasks", "/delete", "/tn", "TimeScreenAgentRestart", "/f"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    ["schtasks", "/delete", "/tn", "TimeScreenAgentRestart", "/f"], **sp_kwargs
                 )
     except Exception:
         pass
@@ -607,31 +629,35 @@ def _install_windows_service():
         except Exception:
             pass
 
-    # Ищем и копируем service daemon exe (TimeScreenService.exe)
-    daemon_candidates = [
-        exe_path.parent / "TimeScreenService.exe",
-        Path(os.environ.get("TEMP", ".")) / "tsc_installer" / "TimeScreenService.exe",
+    # Ищем и копируем service daemon (директория --onedir сборки)
+    daemon_dir_candidates = [
+        exe_path.parent / "TimeScreenService",
+        Path(os.environ.get("TEMP", ".")) / "tsc_installer" / "TimeScreenService",
     ]
-    target_daemon = INSTALL_DIR / "TimeScreenService.exe"
+    target_daemon_dir = INSTALL_DIR / "TimeScreenService"
+    target_daemon_exe = target_daemon_dir / "TimeScreenService.exe"
     daemon_found = False
-    for src in daemon_candidates:
-        if src.exists() and src.resolve() != target_daemon.resolve():
+    for src_dir in daemon_dir_candidates:
+        src_exe = src_dir / "TimeScreenService.exe"
+        if src_dir.is_dir() and src_exe.exists() and src_dir.resolve() != target_daemon_dir.resolve():
             try:
-                shutil.copy2(str(src), str(target_daemon))
+                if target_daemon_dir.exists():
+                    shutil.rmtree(str(target_daemon_dir), ignore_errors=True)
+                shutil.copytree(str(src_dir), str(target_daemon_dir))
                 daemon_found = True
                 break
             except Exception:
                 continue
 
-    if not daemon_found and target_daemon.exists():
+    if not daemon_found and target_daemon_exe.exists():
         daemon_found = True  # уже на месте
 
     if not daemon_found:
         messagebox.showwarning(
             "Внимание",
-            "Не найден файл службы TimeScreenService.exe.\n"
+            "Не найден каталог службы TimeScreenService\\TimeScreenService.exe.\n"
             "Он должен лежать рядом с TimeScreenControl.exe.\n"
-            "Пересоберите проект."
+            "Пересоберите проект с --onedir."
         )
         return
 
@@ -644,7 +670,7 @@ def _install_windows_service():
         time.sleep(1)
         result = subprocess.run(
             ["sc", "create", SERVICE_NAME,
-             "binPath=", f'"{target_daemon}"',
+             "binPath=", f'"{target_daemon_exe}"',
              "DisplayName=", "TimeScreen - Родительский контроль",
              "start=", "auto"],
             capture_output=True, text=True
@@ -703,7 +729,8 @@ def _check_service_static():
     try:
         result = subprocess.run(
             ["sc", "query", SERVICE_NAME],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            creationflags=_CREATE_NO_WINDOW
         )
         installed = "FAILED" not in result.stdout and "1060" not in result.stdout
         running = "RUNNING" in result.stdout
@@ -789,19 +816,30 @@ def install_user():
             except Exception:
                 pass
 
-    # Копируем Service Daemon (если лежит рядом)
-    daemon_src = exe_path.parent / "TimeScreenService.exe"
-    daemon_dst = INSTALL_DIR / "TimeScreenService.exe"
-    if daemon_src.exists() and daemon_src.resolve() != daemon_dst.resolve():
+    # Копируем Service Daemon (директория --onedir сборки)
+    daemon_dir_src = exe_path.parent / "TimeScreenService"
+    daemon_dir_dst = INSTALL_DIR / "TimeScreenService"
+    if daemon_dir_src.is_dir() and daemon_dir_src.resolve() != daemon_dir_dst.resolve():
         try:
-            shutil.copy2(str(daemon_src), str(daemon_dst))
+            if daemon_dir_dst.exists():
+                shutil.rmtree(str(daemon_dir_dst), ignore_errors=True)
+            shutil.copytree(str(daemon_dir_src), str(daemon_dir_dst))
         except Exception:
             pass
 
-    # VBS для скрытого запуска пользовательского агента
-    vbs = INSTALL_DIR / "run_agent.vbs"
-    with open(vbs, "w") as f:
-        f.write(f'CreateObject("WScript.Shell").Run """{target_exe}"" --user-agent", 0, False\n')
+    # VBS для скрытого запуска пользовательского агента (локально + в ProgramData для службы)
+    vbs_local = INSTALL_DIR / "run_agent.vbs"
+    vbs_content = f'CreateObject("WScript.Shell").Run """{target_exe}"" --user-agent", 0, False\n'
+    with open(vbs_local, "w") as f:
+        f.write(vbs_content)
+    # Дублируем в ProgramData — служба (SYSTEM) читает оттуда
+    vbs_pdata = CONFIG_FILE.parent / "run_agent.vbs"
+    try:
+        vbs_pdata.parent.mkdir(parents=True, exist_ok=True)
+        with open(vbs_pdata, "w") as f:
+            f.write(vbs_content)
+    except OSError:
+        pass  # нет прав на ProgramData — служба сама создаст при необходимости
 
     # Автозагрузка
     startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
@@ -809,7 +847,7 @@ def install_user():
     _create_shortcut(
         link_path=startup_dir / "TimeScreen.lnk",
         target="wscript.exe",
-        args=f'"{vbs}"',
+        args=f'"{vbs_local}"',
         workdir=str(INSTALL_DIR),
         desc="TimeScreen Control - агент"
     )
@@ -1091,7 +1129,8 @@ class MainApp:
             pid = int(PID_FILE.read_text().strip())
             result = subprocess.run(
                 ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
-                capture_output=True, text=True
+                capture_output=True, text=True,
+                creationflags=_CREATE_NO_WINDOW
             )
             return str(pid) in result.stdout
         except Exception:
@@ -1101,7 +1140,8 @@ class MainApp:
         try:
             result = subprocess.run(
                 ["sc", "query", SERVICE_NAME],
-                capture_output=True, text=True
+                capture_output=True, text=True,
+                creationflags=_CREATE_NO_WINDOW
             )
             installed = "FAILED" not in result.stdout and "1060" not in result.stdout
             running = "RUNNING" in result.stdout
@@ -1174,13 +1214,43 @@ class MainApp:
         self.cfg.set_enabled(True)
         installed, _ = self._check_service_state()
         if installed:
-            # Запускаем службу
-            subprocess.run(["sc", "start", SERVICE_NAME],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            messagebox.showinfo("Запущено", "Служба запущена. Защита активна.")
-        else:
-            # Запускаем пользовательский агент
+            # Запускаем службу и проверяем результат
+            result = subprocess.run(["sc", "start", SERVICE_NAME],
+                                    capture_output=True, text=True,
+                                    creationflags=_CREATE_NO_WINDOW)
+            # Ждём до 10 секунд с проверкой каждые 2 сек
+            running = False
+            for _ in range(5):
+                time.sleep(2)
+                _, running = self._check_service_state()
+                if running:
+                    break
+            if running:
+                messagebox.showinfo("Запущено", "Служба запущена. Защита активна.")
+            else:
+                messagebox.showwarning(
+                    "Внимание",
+                    f"Служба не запустилась.\n\n{result.stdout.strip()}\n{result.stderr.strip()}\n\n"
+                    "Попробуйте открыть вкладку «Система» и установить службу заново."
+                )
+                return  # Не запускаем агент, если служба не стартанула
+
+        # Запускаем агент (индикатор + экран блокировки), если ещё не запущен
+        agent_running = False
+        if AGENT_PID.exists():
+            try:
+                pid = int(AGENT_PID.read_text().strip())
+                result = subprocess.run(
+                    ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
+                    capture_output=True, text=True,
+                    creationflags=_CREATE_NO_WINDOW
+                )
+                agent_running = str(pid) in result.stdout
+            except Exception:
+                pass
+        if not agent_running:
             subprocess.Popen([sys.executable, "--user-agent"], creationflags=0x08000000)
+        if not installed:
             messagebox.showinfo("Запущено", "Агент запущен. Защита активна.")
         self._refresh_status()
 
