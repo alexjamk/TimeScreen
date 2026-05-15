@@ -5,9 +5,32 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Test files
-.pytest_cache/
+# Dependencies
+.venv/
+venv/
+env/
+ENV/
 
-# Configuration
-TimeScreenControl/C:\ProgramData/TimeScreen/pc_config.json
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
 ```
