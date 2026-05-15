@@ -24,7 +24,7 @@ from pathlib import Path
 # Конфигурация
 # ---------------------------------------------------------------------------
 APP_NAME = "TimeScreen Control"
-APP_VERSION = "2.1"
+APP_VERSION = "2.3"
 _CREATE_NO_WINDOW = 0x08000000  # Подавляет мелькание консольных окон subprocess
 
 if getattr(sys, 'frozen', False):
@@ -390,23 +390,32 @@ class LockScreen:
 
 class TimerOverlay:
     def __init__(self):
-        self.cfg = ConfigManager()
-        self.root = tk.Tk()
-        self.root.title("TimeScreen Timer")
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.92)  # Полупрозрачность вместо transparentcolor (не мерцает)
-        self.root.configure(bg="#0a0a0a")
-        self.root.attributes("-toolwindow", True)  # Не показывать в панели задач
-        self.lbl = tk.Label(self.root, text="", font=("Consolas", 14, "bold"),
-                            bg="#0a0a0a", fg="#00ff00", padx=12, pady=6)
-        self.lbl.pack()
-        self.root.update_idletasks()
-        sw = self.root.winfo_screenwidth()
-        self.root.geometry(f"+{sw - 280}+10")
-        self._tick = 0
-        self._update()
-        self.root.mainloop()
+        try:
+            self.cfg = ConfigManager()
+            self.root = tk.Tk()
+            self.root.title("TimeScreen Timer")
+            self.root.overrideredirect(True)
+            self.root.attributes("-topmost", True)
+            self.root.attributes("-alpha", 0.92)  # Полупрозрачность вместо transparentcolor (не мерцает)
+            self.root.configure(bg="#0a0a0a")
+            self.root.attributes("-toolwindow", True)  # Не показывать в панели задач
+            self.lbl = tk.Label(self.root, text="", font=("Consolas", 14, "bold"),
+                                bg="#0a0a0a", fg="#00ff00", padx=12, pady=6)
+            self.lbl.pack()
+            self.root.update_idletasks()
+            sw = self.root.winfo_screenwidth()
+            self.root.geometry(f"+{sw - 280}+10")
+            self._tick = 0
+            self._update()
+            self.root.mainloop()
+        except Exception as e:
+            log(f"TimerOverlay crashed: {e}")
+            # Попытка показать ошибку через messagebox
+            try:
+                import traceback
+                log(traceback.format_exc())
+            except Exception:
+                pass
 
     def _update(self):
         self._tick += 1
@@ -570,7 +579,10 @@ def run_user_agent():
     # Запускаем таймер если нужно
     timer_proc = None
     if cfg.config.get("show_timer", True):
-        timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+        try:
+            timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+        except Exception as e:
+            log(f"Failed to start timer: {e}")
 
     log("User agent started")
     try:
@@ -591,7 +603,10 @@ def run_user_agent():
                 lock_proc.wait()
                 log("Lock screen closed")
                 if cfg.config.get("show_timer", True):
-                    timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+                    try:
+                        timer_proc = subprocess.Popen([exe, "--timer"], creationflags=0x08000000)
+                    except Exception as e:
+                        log(f"Failed to restart timer: {e}")
 
             time.sleep(3)
     except KeyboardInterrupt:
@@ -775,10 +790,11 @@ del "%~f0" 2>nul
     subprocess.Popen(["cmd", "/c", str(tmp_bat)], creationflags=0x08000000)
 
 
-def _create_shortcut(link_path: Path, target: str, args: str, workdir: str, desc: str):
+def _create_shortcut(link_path: Path, target: str, args: str, workdir: str, desc: str, icon: str = ""):
     tmp_vbs = Path(os.environ["TEMP"]) / "_tsc_shortcut.vbs"
     args_escaped = args.replace('"', '""')
     target_escaped = target.replace('"', '""')
+    icon_line = f'oLink.IconLocation = "{icon}"\n' if icon else ""
     with open(tmp_vbs, "w") as f:
         f.write(f'''
 Set oWS = WScript.CreateObject("WScript.Shell")
@@ -789,7 +805,7 @@ oLink.Arguments = "{args_escaped}"
 oLink.WorkingDirectory = "{workdir}"
 oLink.WindowStyle = 7
 oLink.Description = "{desc}"
-oLink.Save
+{icon_line}oLink.Save
 ''')
     subprocess.call(["cscript", "//nologo", str(tmp_vbs)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     tmp_vbs.unlink(missing_ok=True)
@@ -849,7 +865,8 @@ def install_user():
         target="wscript.exe",
         args=f'"{vbs_local}"',
         workdir=str(INSTALL_DIR),
-        desc="TimeScreen Control - агент"
+        desc="TimeScreen Control - агент",
+        icon=f"{target_exe},0"
     )
 
     # Ярлыки на рабочем столе
@@ -857,12 +874,14 @@ def install_user():
     _create_shortcut(
         link_path=desktop / "TimeScreen - Настройки.lnk",
         target=str(target_exe), args="", workdir=str(INSTALL_DIR),
-        desc="TimeScreen Control - настройки"
+        desc="TimeScreen Control - настройки",
+        icon=f"{target_exe},0"
     )
     _create_shortcut(
         link_path=desktop / "TimeScreen - Защита.lnk",
         target=str(target_exe), args="--toggle", workdir=str(INSTALL_DIR),
-        desc="Включить / выключить защиту"
+        desc="Включить / выключить защиту",
+        icon=f"{target_exe},0"
     )
 
     messagebox.showinfo(
