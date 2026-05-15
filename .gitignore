@@ -1,54 +1,40 @@
-# Python
+```
+# Dependencies
+venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# Build artifacts
+# Build and distribution artifacts
 build/
 dist/
 *.egg-info/
 
-# Temp files
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
 *.tmp
+
+# OS generated files
 .DS_Store
 Thumbs.db
 
-# Executable builds
-*.exe
-*.msi
-*.app
-*.spec
-
-# Installer packages (generated)
-ParentalControl_Installer_User/
-TimeScreen_Installer/
-
-# Release archives
-*.zip
-release_body.json
+# Testing
+.coverage
+coverage/
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+```

@@ -1,0 +1,9 @@
+# TimeScreen Control - Python Dependencies
+
+# Password hashing (strong security)
+bcrypt>=4.0.0
+
+# Windows service support (optional, for production)
+pywin32>=305; sys_platform == 'win32'
+
+# GUI is built-in with tkinter (no additional deps needed)
