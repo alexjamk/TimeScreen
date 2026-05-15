@@ -57,48 +57,52 @@ if errorlevel 1 (
 echo ✅ Файлы скопированы
 echo.
 
-REM Create start menu shortcut
+REM Create start menu shortcut using PowerShell (more reliable)
 echo Создание ярлыка в меню Пуск...
-set "STARTMENU_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\TimeScreen Control"
+set "STARTMENU_DIR=%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\TimeScreen Control"
 mkdir "%STARTMENU_DIR%" 2>nul
 
-REM Create settings shortcut (points to EXE)
-echo Set WshShell = CreateObject("WScript.Shell") > "%TEMP%\create_shortcut.vbs"
-echo Set oLink = WshShell.CreateShortcut("%STARTMENU_DIR%\Настройки TimeScreen.lnk") >> "%TEMP%\create_shortcut.vbs"
-echo oLink.TargetPath = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
-echo oLink.WorkingDirectory = "%INSTALL_DIR%" >> "%TEMP%\create_shortcut.vbs"
-echo oLink.IconLocation = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
-echo oLink.Description = "Настройки родительского контроля TimeScreen" >> "%TEMP%\create_shortcut.vbs"
-echo oLink.Save >> "%TEMP%\create_shortcut.vbs"
-cscript //nologo "%TEMP%\create_shortcut.vbs"
-del "%TEMP%\create_shortcut.vbs"
+powershell -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%STARTMENU_DIR%\Настройки TimeScreen.lnk'); $Shortcut.TargetPath = '%INSTALL_DIR%\TimeScreenControl.exe'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.IconLocation = '%INSTALL_DIR%\TimeScreenControl.exe'; $Shortcut.Description = 'Настройки родительского контроля TimeScreen'; $Shortcut.Save()"
+if errorlevel 1 (
+    echo ⚠️ Не удалось создать ярлык через PowerShell, пробуем VBS...
+    echo Set WshShell = CreateObject("WScript.Shell") > "%TEMP%\create_shortcut.vbs"
+    echo Set oLink = WshShell.CreateShortcut("%STARTMENU_DIR%\Настройки TimeScreen.lnk") >> "%TEMP%\create_shortcut.vbs"
+    echo oLink.TargetPath = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
+    echo oLink.WorkingDirectory = "%INSTALL_DIR%" >> "%TEMP%\create_shortcut.vbs"
+    echo oLink.IconLocation = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
+    echo oLink.Description = "Настройки родительского контроля TimeScreen" >> "%TEMP%\create_shortcut.vbs"
+    echo oLink.Save >> "%TEMP%\create_shortcut.vbs"
+    cscript //nologo "%TEMP%\create_shortcut.vbs"
+    del "%TEMP%\create_shortcut.vbs"
+)
 echo ✅ Ярлык создан
 echo.
 
-REM Register Windows Service (points to EXE with --service flag)
+REM Register Windows Service using Python module
 echo Регистрация службы Windows...
-sc create TimeScreenService binPath= "\"%INSTALL_DIR%\TimeScreenControl.exe\" --service" start= auto DisplayName= "TimeScreen Control Service"
+"%INSTALL_DIR%\TimeScreenControl.exe" --service install
 if errorlevel 1 (
-    echo ⚠️ Возможно служба уже существует, пытаемся обновить...
-    sc config TimeScreenService binPath= "\"%INSTALL_DIR%\TimeScreenControl.exe\" --service" >nul 2>&1
-    if errorlevel 1 (
-        echo ❌ Не удалось зарегистрировать службу
-        echo Попробуйте удалить старую версию и установить заново
-        pause
-        exit /b 1
-    )
-    echo ✅ Служба обновлена
-) else (
-    echo ✅ Служба зарегистрирована
+    echo ⚠️ Не удалось зарегистрировать службу через exe
+    echo Попробуйте переустановить программу
+    pause
+    exit /b 1
+)
+echo ✅ Служба зарегистрирована
+
+REM Configure service to start automatically
+sc config TimeScreenControl start= auto >nul
+if errorlevel 1 (
+    echo ⚠️ Не удалось настроить автозапуск службы
 )
 
-REM Start the service (it will run but protection depends on settings)
+REM Start the service
 echo Запуск службы...
-sc start TimeScreenService
+sc start TimeScreenControl
 if errorlevel 1 (
     echo ⚠️ Не удалось запустить службу автоматически
     echo Служба будет запущена при следующей перезагрузке
     echo Или запустите вручную через services.msc
+    echo Код ошибки: %errorlevel%
 ) else (
     echo ✅ Служба запущена
 )
