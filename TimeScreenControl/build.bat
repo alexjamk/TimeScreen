@@ -23,6 +23,8 @@ if not exist "dist" mkdir dist
 
 REM Run PyInstaller with all necessary options
 REM Using python -m PyInstaller as requested
+REM IMPORTANT: --windowed for GUI, but service needs console
+REM We'll build ONE file that works for both (console app)
 python -m PyInstaller --noconfirm --clean ^
     --name "TimeScreenControl" ^
     --icon "src/resources/icon.ico" ^
@@ -34,8 +36,11 @@ python -m PyInstaller --noconfirm --clean ^
     --hidden-import tkinter ^
     --hidden-import tkinter.ttk ^
     --hidden-import bcrypt ^
+    --hidden-import win32serviceutil ^
+    --hidden-import win32service ^
+    --hidden-import win32event ^
+    --hidden-import servicemanager ^
     --onefile ^
-    --windowed ^
     src/main.py
 
 if errorlevel 1 (

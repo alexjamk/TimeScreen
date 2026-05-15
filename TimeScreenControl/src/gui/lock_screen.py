@@ -256,11 +256,16 @@ class LockScreen:
         self.root.mainloop()
 
 
-def show_lock_screen():
-    """Convenience function to show lock screen."""
+def run_lock_screen():
+    """Entry point for running lock screen from command line (--locker-mode)."""
     lock = LockScreen()
     lock.run()
 
 
+def show_lock_screen():
+    """Convenience function to show lock screen."""
+    run_lock_screen()
+
+
 if __name__ == "__main__":
-    show_lock_screen()
+    run_lock_screen()
