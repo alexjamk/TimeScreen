@@ -1,36 +1,9 @@
 ```
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# Batch installers and uninstallers
+TimeScreenControl/install/*.bat
 
-# Dependencies
-.venv/
-venv/
-env/
-ENV/
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-
-# Logs
+# Windows-specific files
+*.tmp
 *.log
-
-# Environment files
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
 Thumbs.db
 ```

@@ -33,6 +33,32 @@ echo 📁 Каталог установки: %INSTALL_DIR%
 echo 📁 Каталог данных: %CONFIG_DIR%
 echo.
 
+REM Stop and remove existing service if present
+echo Проверка существующей службы...
+sc query TimeScreenControl >nul 2>&1
+if %errorlevel% equ 0 (
+    echo ℹ️ Найдена существующая служба, остановка...
+    sc stop TimeScreenControl >nul 2>&1
+    timeout /t 3 /nobreak >nul
+    sc delete TimeScreenControl >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    echo ✅ Старая служба удалена
+) else (
+    echo ℹ️ Существующая служба не найдена
+)
+echo.
+
+REM Kill any running instances of the application
+echo Завершение работающих процессов...
+taskkill /F /IM TimeScreenControl.exe >nul 2>&1
+if %errorlevel% equ 0 (
+    echo ✅ Процессы завершены
+) else (
+    echo ℹ️ Активных процессов не найдено
+)
+timeout /t 1 /nobreak >nul
+echo.
+
 REM Create directories
 echo Создание каталогов...
 mkdir "%INSTALL_DIR%" 2>nul
@@ -45,14 +71,25 @@ if errorlevel 1 (
 echo ✅ Каталоги созданы
 echo.
 
-REM Copy EXE and scripts
+REM Copy EXE and scripts - retry logic for file in use
 echo Копирование файлов программы...
-copy /Y "%~dp0TimeScreenControl.exe" "%INSTALL_DIR%\" >nul
+set COPY_RETRY=0
+:COPY_LOOP
+copy /Y "%~dp0TimeScreenControl.exe" "%INSTALL_DIR%\" >nul 2>&1
 if errorlevel 1 (
-    echo ❌ Ошибка копирования TimeScreenControl.exe
-    echo Убедитесь, что exe-файл находится в той же папке, что и install.bat
-    pause
-    exit /b 1
+    set /a COPY_RETRY+=1
+    if !COPY_RETRY! leq 3 (
+        echo ⚠️ Файл заблокирован, попытка !COPY_RETRY! из 3...
+        timeout /t 2 /nobreak >nul
+        taskkill /F /IM TimeScreenControl.exe >nul 2>&1
+        goto COPY_LOOP
+    ) else (
+        echo ❌ Ошибка копирования TimeScreenControl.exe после 3 попыток
+        echo Убедитесь, что exe-файл находится в той же папке, что и install.bat
+        echo и что файл не используется другим процессом
+        pause
+        exit /b 1
+    )
 )
 echo ✅ Файлы скопированы
 echo.
@@ -62,28 +99,46 @@ echo Создание ярлыка в меню Пуск...
 set "STARTMENU_DIR=%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\TimeScreen Control"
 mkdir "%STARTMENU_DIR%" 2>nul
 
-powershell -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%STARTMENU_DIR%\Настройки TimeScreen.lnk'); $Shortcut.TargetPath = '%INSTALL_DIR%\TimeScreenControl.exe'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.IconLocation = '%INSTALL_DIR%\TimeScreenControl.exe'; $Shortcut.Description = 'Настройки родительского контроля TimeScreen'; $Shortcut.Save()"
+REM Try PowerShell first with error suppression
+powershell -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%STARTMENU_DIR%\Настройки TimeScreen.lnk'); $Shortcut.TargetPath = '%INSTALL_DIR%\TimeScreenControl.exe'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.IconLocation = '%INSTALL_DIR%\TimeScreenControl.exe'; $Shortcut.Description = 'Настройки родительского контроля TimeScreen'; $Shortcut.Save()" >nul 2>&1
 if errorlevel 1 (
     echo ⚠️ Не удалось создать ярлык через PowerShell, пробуем VBS...
-    echo Set WshShell = CreateObject("WScript.Shell") > "%TEMP%\create_shortcut.vbs"
-    echo Set oLink = WshShell.CreateShortcut("%STARTMENU_DIR%\Настройки TimeScreen.lnk") >> "%TEMP%\create_shortcut.vbs"
+    echo Set WshShell = CreateObject^("WScript.Shell"^) > "%TEMP%\create_shortcut.vbs"
+    echo Set oLink = WshShell.CreateShortcut^("%STARTMENU_DIR%\Настройки TimeScreen.lnk"^) >> "%TEMP%\create_shortcut.vbs"
     echo oLink.TargetPath = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
     echo oLink.WorkingDirectory = "%INSTALL_DIR%" >> "%TEMP%\create_shortcut.vbs"
     echo oLink.IconLocation = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
     echo oLink.Description = "Настройки родительского контроля TimeScreen" >> "%TEMP%\create_shortcut.vbs"
     echo oLink.Save >> "%TEMP%\create_shortcut.vbs"
-    cscript //nologo "%TEMP%\create_shortcut.vbs"
-    del "%TEMP%\create_shortcut.vbs"
+    cscript //nologo "%TEMP%\create_shortcut.vbs" >nul 2>&1
+    if errorlevel 1 (
+        echo ⚠️ Не удалось создать ярлык
+    ) else (
+        del "%TEMP%\create_shortcut.vbs" 2>nul
+    )
 )
 echo ✅ Ярлык создан
 echo.
 
 REM Register Windows Service using Python module
 echo Регистрация службы Windows...
+
+REM First, ensure any old service is completely removed
+sc query TimeScreenControl >nul 2>&1
+if %errorlevel% equ 0 (
+    echo ℹ️ Служба уже существует, удаляем...
+    sc stop TimeScreenControl >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    sc delete TimeScreenControl >nul 2>&1
+    timeout /t 2 /nobreak >nul
+)
+
+REM Install the service
 "%INSTALL_DIR%\TimeScreenControl.exe" --service install
 if errorlevel 1 (
-    echo ⚠️ Не удалось зарегистрировать службу через exe
-    echo Попробуйте переустановить программу
+    echo ❌ Не удалось зарегистрировать службу через exe
+    echo Проверьте, что файл TimeScreenControl.exe находится в %INSTALL_DIR%
+    echo и содержит корректный код службы Windows
     pause
     exit /b 1
 )
