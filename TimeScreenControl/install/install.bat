@@ -89,10 +89,26 @@ echo Регистрация службы Windows...
 sc create TimeScreenService binPath= "\"%INSTALL_DIR%\src\python.exe\" \"%INSTALL_DIR%\src\main.py\" --service" start= auto DisplayName= "TimeScreen Control Service"
 if errorlevel 1 (
     echo ⚠️ Служба не зарегистрирована (возможно Python не найден)
-    echo Службу можно зарегистрировать вручную позже
+    echo Попытка регистрации с использованием python из PATH...
+    sc create TimeScreenService binPath= "python \"%INSTALL_DIR%\src\main.py\" --service" start= auto DisplayName= "TimeScreen Control Service"
+    if errorlevel 1 (
+        echo ⚠️ Не удалось зарегистрировать службу
+        echo Зарегистрируйте службу вручную после установки Python
+    ) else (
+        echo ✅ Служба зарегистрирована (через PATH)
+    )
 ) else (
     echo ✅ Служба зарегистрирована
-    sc start TimeScreenService
+)
+
+REM Start the service
+echo Запуск службы...
+sc start TimeScreenService
+if errorlevel 1 (
+    echo ⚠️ Не удалось запустить службу автоматически
+    echo Запустите службу вручную через services.msc
+) else (
+    echo ✅ Служба запущена
 )
 echo.
 
