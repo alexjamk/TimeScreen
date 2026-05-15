@@ -1,6 +1,7 @@
 """
 TimeScreen Control - Windows Service Daemon
 Monitors time and enforces restrictions.
+Properly integrated with pywin32 service framework.
 """
 
 import sys
@@ -9,6 +10,10 @@ import time
 import datetime
 import subprocess
 import threading
+import win32serviceutil
+import win32service
+import win32event
+import servicemanager
 from pathlib import Path
 
 # Add parent to path for imports
@@ -34,7 +39,7 @@ class ServiceLogger:
             pass  # Don't fail on logging errors
 
 
-class TimeScreenService:
+class TimeScreenService(win32serviceutil.ServiceFramework):
     """
     Windows service that monitors time and enforces restrictions.
     
@@ -43,49 +48,27 @@ class TimeScreenService:
     - Launches lock screen when time is up
     - Respects grace period
     - Logs all actions
-    - Can be stopped/started via Windows Service Control Manager
+    - Properly integrated with Windows Service Control Manager
     """
+    
+    _svc_name_ = "TimeScreenControl"
+    _svc_display_name_ = "TimeScreen Control Service"
+    _svc_description_ = "Управляет родительским контролем и блокировкой экрана."
     
     CHECK_INTERVAL_SECONDS = 60  # Check every minute
     
-    def __init__(self):
+    def __init__(self, args):
+        super().__init__(args)
+        self.stop_event = win32event.CreateEvent(None, 0, 0, None)
         self.cfg = ConfigManager(read_only=True)
         self.logger = ServiceLogger(LOG_PATH)
-        self.running = False
         self.lock_screen_process = None
         self._last_lock_time = None
     
-    def start(self):
-        """Start the service."""
-        self.running = True
-        self.logger.log("Service started")
-        
-        # Write PID file
-        try:
-            SERVICE_PID.parent.mkdir(parents=True, exist_ok=True)
-            with open(SERVICE_PID, "w") as f:
-                f.write(str(os.getpid()))
-        except Exception as e:
-            self.logger.log(f"Failed to write PID: {e}", "WARNING")
-        
-        # Main monitoring loop
-        while self.running:
-            try:
-                self._check_and_enforce()
-                time.sleep(self.CHECK_INTERVAL_SECONDS)
-            except KeyboardInterrupt:
-                self.logger.log("Interrupted by user")
-                break
-            except Exception as e:
-                self.logger.log(f"Error in main loop: {e}", "ERROR")
-                time.sleep(10)  # Sleep briefly on error
-        
-        self.stop()
-    
-    def stop(self):
-        """Stop the service."""
-        self.running = False
-        self.logger.log("Service stopping")
+    def SvcStop(self):
+        """Called when service is being stopped."""
+        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        win32event.SetEvent(self.stop_event)
         
         # Kill lock screen if running
         if self.lock_screen_process:
@@ -101,7 +84,45 @@ class TimeScreenService:
         except Exception:
             pass
         
+        self.logger.log("Service stopping")
         self.logger.log("Service stopped")
+    
+    def SvcDoRun(self):
+        """Called when service is started."""
+        servicemanager.LogMsg(
+            servicemanager.EVENTLOG_INFORMATION_TYPE,
+            servicemanager.PYS_SERVICE_STARTED,
+            (self._svc_name_, '')
+        )
+        
+        self.logger.log("Service started")
+        
+        # Write PID file
+        try:
+            SERVICE_PID.parent.mkdir(parents=True, exist_ok=True)
+            with open(SERVICE_PID, "w") as f:
+                f.write(str(os.getpid()))
+        except Exception as e:
+            self.logger.log(f"Failed to write PID: {e}", "WARNING")
+        
+        # Main monitoring loop
+        while True:
+            # Wait for stop event or timeout
+            rc = win32event.WaitForSingleObject(self.stop_event, self.CHECK_INTERVAL_SECONDS * 1000)
+            
+            if rc == win32event.WAIT_OBJECT_0:
+                break
+            
+            try:
+                self._check_and_enforce()
+            except KeyboardInterrupt:
+                self.logger.log("Interrupted by user")
+                break
+            except Exception as e:
+                self.logger.log(f"Error in main loop: {e}", "ERROR")
+                time.sleep(10)  # Sleep briefly on error
+        
+        self.SvcStop()
     
     def _check_and_enforce(self):
         """Check current time and enforce restrictions if needed."""
@@ -140,12 +161,19 @@ class TimeScreenService:
     def _lock_screen(self):
         """Launch the lock screen."""
         try:
-            # Get path to lock_screen.py
-            lock_screen_path = Path(__file__).parent / "gui" / "lock_screen.py"
+            # Get path to current executable
+            if getattr(sys, 'frozen', False):
+                # Running as compiled executable
+                exe_path = sys.executable
+                cmd = [exe_path, "--locker-mode"]
+            else:
+                # Running as script
+                lock_screen_path = Path(__file__).parent / "gui" / "lock_screen.py"
+                cmd = [sys.executable, str(lock_screen_path)]
             
             # Start lock screen process
             self.lock_screen_process = subprocess.Popen(
-                [sys.executable, str(lock_screen_path)],
+                cmd,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
             
@@ -168,8 +196,7 @@ class TimeScreenService:
 
 def run_service():
     """Entry point for running as a service."""
-    service = TimeScreenService()
-    service.start()
+    win32serviceutil.HandleCommandLine(TimeScreenService)
 
 
 if __name__ == "__main__":
