@@ -1,17 +1,36 @@
 ```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+.venv/
+venv/
+env/
+ENV/
+
 # Build artifacts
 build/
+dist/
+*.egg-info/
 
-# Logs and temp files
+# Logs
 *.log
-*.tmp
+
+# Environment files
+.env
+.env.local
+*.env.*
 
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Environment
-.env
-.env.local
-*.env.*
+# OS
+.DS_Store
+Thumbs.db
 ```

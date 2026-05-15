@@ -4,6 +4,7 @@ setlocal enabledelayedexpansion
 
 REM TimeScreen Control - Installation Script
 REM Must be run as Administrator
+REM Works with pre-built EXE from developer
 
 echo ════════════════════════════════════════════
 echo   TimeScreen Control - Установка
@@ -44,26 +45,16 @@ if errorlevel 1 (
 echo ✅ Каталоги созданы
 echo.
 
-REM Copy files
-echo Копирование файлов...
-xcopy /E /Y /I "%~dp0..\src" "%INSTALL_DIR%\src" >nul
-xcopy /Y "%~dp0..\requirements.txt" "%INSTALL_DIR\" >nul
+REM Copy EXE and scripts
+echo Копирование файлов программы...
+copy /Y "%~dp0TimeScreenControl.exe" "%INSTALL_DIR%\" >nul
 if errorlevel 1 (
-    echo ❌ Ошибка копирования файлов
+    echo ❌ Ошибка копирования TimeScreenControl.exe
+    echo Убедитесь, что exe-файл находится в той же папке, что и install.bat
     pause
     exit /b 1
 )
 echo ✅ Файлы скопированы
-echo.
-
-REM Install Python dependencies
-echo Установка зависимостей Python...
-cd /d "%INSTALL_DIR%"
-python -m pip install --quiet -r requirements.txt
-if errorlevel 1 (
-    echo ⚠️ Предупреждение: Не удалось установить зависимости
-    echo Проверьте, что Python установлен и доступен в PATH
-)
 echo.
 
 REM Create start menu shortcut
@@ -71,42 +62,43 @@ echo Создание ярлыка в меню Пуск...
 set "STARTMENU_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\TimeScreen Control"
 mkdir "%STARTMENU_DIR%" 2>nul
 
-REM Create settings shortcut
+REM Create settings shortcut (points to EXE)
 echo Set WshShell = CreateObject("WScript.Shell") > "%TEMP%\create_shortcut.vbs"
-echo Set oLink = WshShell.CreateShortcut("%STARTMENU_DIR%\Настройки.lnk") >> "%TEMP%\create_shortcut.vbs"
-echo oLink.TargetPath = "%INSTALL_DIR%\src\main.py" >> "%TEMP%\create_shortcut.vbs"
-echo oLink.WorkingDirectory = "%INSTALL_DIR%\src" >> "%TEMP%\create_shortcut.vbs"
-echo oLink.IconLocation = "%INSTALL_DIR%\src\resources\icon.ico" >> "%TEMP%\create_shortcut.vbs"
-echo oLink.Description = "Настройки TimeScreen Control" >> "%TEMP%\create_shortcut.vbs"
+echo Set oLink = WshShell.CreateShortcut("%STARTMENU_DIR%\Настройки TimeScreen.lnk") >> "%TEMP%\create_shortcut.vbs"
+echo oLink.TargetPath = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
+echo oLink.WorkingDirectory = "%INSTALL_DIR%" >> "%TEMP%\create_shortcut.vbs"
+echo oLink.IconLocation = "%INSTALL_DIR%\TimeScreenControl.exe" >> "%TEMP%\create_shortcut.vbs"
+echo oLink.Description = "Настройки родительского контроля TimeScreen" >> "%TEMP%\create_shortcut.vbs"
 echo oLink.Save >> "%TEMP%\create_shortcut.vbs"
 cscript //nologo "%TEMP%\create_shortcut.vbs"
 del "%TEMP%\create_shortcut.vbs"
 echo ✅ Ярлык создан
 echo.
 
-REM Register Windows Service
+REM Register Windows Service (points to EXE with --service flag)
 echo Регистрация службы Windows...
-sc create TimeScreenService binPath= "\"%INSTALL_DIR%\src\python.exe\" \"%INSTALL_DIR%\src\main.py\" --service" start= auto DisplayName= "TimeScreen Control Service"
+sc create TimeScreenService binPath= "\"%INSTALL_DIR%\TimeScreenControl.exe\" --service" start= auto DisplayName= "TimeScreen Control Service"
 if errorlevel 1 (
-    echo ⚠️ Служба не зарегистрирована (возможно Python не найден)
-    echo Попытка регистрации с использованием python из PATH...
-    sc create TimeScreenService binPath= "python \"%INSTALL_DIR%\src\main.py\" --service" start= auto DisplayName= "TimeScreen Control Service"
+    echo ⚠️ Возможно служба уже существует, пытаемся обновить...
+    sc config TimeScreenService binPath= "\"%INSTALL_DIR%\TimeScreenControl.exe\" --service" >nul 2>&1
     if errorlevel 1 (
-        echo ⚠️ Не удалось зарегистрировать службу
-        echo Зарегистрируйте службу вручную после установки Python
-    ) else (
-        echo ✅ Служба зарегистрирована (через PATH)
+        echo ❌ Не удалось зарегистрировать службу
+        echo Попробуйте удалить старую версию и установить заново
+        pause
+        exit /b 1
     )
+    echo ✅ Служба обновлена
 ) else (
     echo ✅ Служба зарегистрирована
 )
 
-REM Start the service
+REM Start the service (it will run but protection depends on settings)
 echo Запуск службы...
 sc start TimeScreenService
 if errorlevel 1 (
     echo ⚠️ Не удалось запустить службу автоматически
-    echo Запустите службу вручную через services.msc
+    echo Служба будет запущена при следующей перезагрузке
+    echo Или запустите вручную через services.msc
 ) else (
     echo ✅ Служба запущена
 )
@@ -115,8 +107,11 @@ echo.
 REM Create initial config if not exists
 if not exist "%CONFIG_DIR%\pc_config.json" (
     echo Создание начальной конфигурации...
-    echo {"enabled": true, "show_timer": true, "controlled_users": []} > "%CONFIG_DIR%\pc_config.json"
+    echo {"enabled": false, "password_hash": "", "show_timer": true, "timer_position": "top-right", "controlled_users": [], "time_limits": {}} > "%CONFIG_DIR%\pc_config.json"
     echo ✅ Конфигурация создана
+    echo.
+    echo ⚠️ ВНИМАНИЕ: При первом запуске настроек вам будет предложено
+    echo    установить пароль администратора. Запомните его!
 )
 echo.
 
@@ -125,10 +120,16 @@ echo   ✅ Установка завершена успешно!
 echo ════════════════════════════════════════════
 echo.
 echo Для запуска настроек:
-echo   - Используйте ярлык в меню Пуск
-echo   - Или запустите "%INSTALL_DIR%\src\main.py"
+echo   - Используйте ярлык "Настройки TimeScreen" в меню Пуск
+echo   - Или запустите "%INSTALL_DIR%\TimeScreenControl.exe"
 echo.
-echo Служба запущена и активна.
-echo Активность защиты настраивается в настройках программы.
+echo Служба установлена и запущена.
+echo Защита АКТИВНА только если включена в настройках программы.
+echo.
+echo Для включения защиты:
+echo   1. Откройте настройки
+echo   2. Установите пароль администратора (если ещё не установлен)
+echo   3. На вкладке "Общие" включите "Включить защиту"
+echo   4. Добавьте пользователей и настройте интервалы
 echo.
 pause
