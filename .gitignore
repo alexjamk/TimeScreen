@@ -1,17 +1,13 @@
 ```
-# Build artifacts
-build/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Logs and temp files
-*.log
-*.tmp
+# Test files
+.pytest_cache/
 
-# Editors
-.vscode/
-.idea/
-
-# Environment
-.env
-.env.local
-*.env.*
+# Configuration
+TimeScreenControl/C:\ProgramData/TimeScreen/pc_config.json
 ```

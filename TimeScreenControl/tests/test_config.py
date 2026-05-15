@@ -69,6 +69,8 @@ class TestConfigManager(unittest.TestCase):
         """Set up test fixtures."""
         # Use a test config path (in memory simulation)
         self.cfg = ConfigManager(read_only=False)
+        # Reset to defaults to avoid state pollution between tests
+        self.cfg.config = ConfigManager.DEFAULT_CONFIG.copy()
     
     def tearDown(self):
         """Clean up after tests."""
