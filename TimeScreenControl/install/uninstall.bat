@@ -27,8 +27,9 @@ sc stop TimeScreenService >nul 2>&1
 timeout /t 3 /nobreak >nul
 sc delete TimeScreenService >nul 2>&1
 if errorlevel 1 (
-    echo ⚠️ Служба не найдена или не удалена
+    echo ℹ️ Служба не найдена или уже удалена
 ) else (
+    timeout /t 2 /nobreak >nul
     echo ✅ Служба удалена
 )
 echo.
@@ -61,14 +62,18 @@ if exist "%INSTALL_DIR%" (
 echo.
 
 REM Ask about config preservation
+echo ════════════════════════════════════════════
 echo.
-set /p preserve="Сохранить конфигурацию? (Y/N): "
-if /i not "!preserve!"=="N" (
+set /p preserve="Сохранить конфигурацию (настройки пользователей)? (Y/N): "
+if /i "!preserve!"=="Y" (
     echo ℹ️ Конфигурация сохранена в %CONFIG_DIR%
+    echo    При следующей установке настройки будут восстановлены
 ) else (
     if exist "%CONFIG_DIR%" (
         rmdir /s /q "%CONFIG_DIR%"
         echo ✅ Конфигурация удалена
+    ) else (
+        echo ℹ️ Конфигурация не найдена
     )
 )
 echo.
@@ -76,5 +81,9 @@ echo.
 echo ════════════════════════════════════════════
 echo   ✅ Удаление завершено!
 echo ════════════════════════════════════════════
+echo.
+echo Если вы планируете переустановку:
+echo   - Выберите Y для сохранения настроек
+echo   - Выберите N для полного сброса
 echo.
 pause

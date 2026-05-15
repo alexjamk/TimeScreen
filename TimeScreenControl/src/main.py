@@ -1,17 +1,37 @@
 """
 TimeScreen Control - Main Entry Point
+
+Usage:
+  TimeScreenControl.exe              # Open settings GUI
+  TimeScreenControl.exe --service    # Run as Windows service (SYSTEM account)
+  TimeScreenControl.exe --version    # Show version
+  TimeScreenControl.exe --help       # Show help
+
+For installation, run install.bat as Administrator.
 """
 
 import sys
+import os
 from pathlib import Path
 
-# Add src to path
-src_path = Path(__file__).parent / "src"
-sys.path.insert(0, str(src_path))
+def get_base_path():
+    """Get base path for both development and PyInstaller bundle"""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        return Path(sys.executable).parent
+    else:
+        # Running as script
+        return Path(__file__).parent
 
 def main():
     """Main entry point"""
-    from gui.app import SettingsApp
+    base_path = get_base_path()
+    
+    # Add appropriate paths for module imports
+    if (base_path / "src").exists():
+        sys.path.insert(0, str(base_path / "src"))
+    else:
+        sys.path.insert(0, str(base_path))
     
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
@@ -35,8 +55,10 @@ For installation, run install.bat as Administrator.
         else:
             print(f"Unknown command: {cmd}")
             print("Use --help for usage information")
+            sys.exit(1)
     else:
         # Launch settings GUI
+        from gui.app import SettingsApp
         app = SettingsApp()
         app.run()
 
