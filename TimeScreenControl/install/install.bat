@@ -4,7 +4,6 @@ setlocal enabledelayedexpansion
 
 REM TimeScreen Control - Installation Script
 REM Must be run as Administrator
-REM Works with pre-built EXE from developer
 
 echo ============================================
 echo   TimeScreen Control - Установка
@@ -23,7 +22,7 @@ if %errorLevel% neq 0 (
 echo [OK] Запущено от имени администратора
 echo.
 
-REM Set installation paths (use system environment directly)
+REM Set installation paths
 set "INSTALL_DIR=%PROGRAMFILES%\TimeScreenControl"
 set "CONFIG_DIR=%PROGRAMDATA%\TimeScreen"
 
@@ -31,7 +30,7 @@ echo Каталог установки: %INSTALL_DIR%
 echo Каталог данных:    %CONFIG_DIR%
 echo.
 
-REM Stop and remove existing service if present
+REM Check for existing service
 echo Проверка существующей службы...
 sc query TimeScreenControl >nul 2>&1
 if %errorlevel% equ 0 (
@@ -46,9 +45,10 @@ if %errorlevel% equ 0 (
 )
 echo.
 
-REM Kill any running instances of the application
+REM Kill running instances
 echo Завершение работающих процессов...
 taskkill /F /IM TimeScreenControl.exe >nul 2>&1
+taskkill /F /IM TimeScreenService.exe >nul 2>&1
 if %errorlevel% equ 0 (
     echo [OK] Процессы завершены
 ) else (
@@ -63,7 +63,6 @@ if not exist "%INSTALL_DIR%" (
     mkdir "%INSTALL_DIR%"
     if errorlevel 1 (
         echo [ERROR] Ошибка создания: %INSTALL_DIR%
-        echo Проверьте права доступа и свободное место на диске
         pause
         exit /b 1
     )
@@ -72,7 +71,6 @@ if not exist "%CONFIG_DIR%" (
     mkdir "%CONFIG_DIR%"
     if errorlevel 1 (
         echo [ERROR] Ошибка создания: %CONFIG_DIR%
-        echo Проверьте права доступа и свободное место на диске
         pause
         exit /b 1
     )
@@ -80,30 +78,39 @@ if not exist "%CONFIG_DIR%" (
 echo [OK] Каталоги созданы
 echo.
 
-REM Copy EXE - retry logic for file in use
-echo Копирование файлов программы...
+REM Copy GUI EXE
+echo Копирование TimeScreenControl.exe...
 set COPY_RETRY=0
 :COPY_LOOP
 copy /Y "%~dp0TimeScreenControl.exe" "%INSTALL_DIR%\" >nul 2>&1
 if errorlevel 1 (
     set /a COPY_RETRY+=1
     if !COPY_RETRY! leq 3 (
-        echo [WARN] Файл заблокирован, попытка !COPY_RETRY! из 3...
+        echo [WARN] Файл заблокирован, попытка !COPY_RETRY!/3...
         timeout /t 2 /nobreak >nul
         taskkill /F /IM TimeScreenControl.exe >nul 2>&1
         goto COPY_LOOP
     ) else (
-        echo [ERROR] Ошибка копирования TimeScreenControl.exe после 3 попыток
-        echo Убедитесь, что exe-файл находится в той же папке, что и install.bat
-        echo и что файл не используется другим процессом
+        echo [ERROR] Не удалось скопировать TimeScreenControl.exe
         pause
         exit /b 1
     )
 )
-echo [OK] Файлы скопированы
+echo [OK] TimeScreenControl.exe скопирован
+
+REM Copy Service onedir
+if exist "%~dp0TimeScreenService" (
+    echo Копирование службы TimeScreenService...
+    if exist "%INSTALL_DIR%\TimeScreenService" rmdir /s /q "%INSTALL_DIR%\TimeScreenService" 2>nul
+    xcopy /E /I /Q /Y "%~dp0TimeScreenService" "%INSTALL_DIR%\TimeScreenService" >nul
+    echo [OK] Служба скопирована
+) else (
+    echo [WARN] Папка TimeScreenService не найдена рядом с install.bat
+    echo Служба НЕ будет установлена. Повторите сборку проекта.
+)
 echo.
 
-REM Create start menu shortcut using VBScript
+REM Create start menu shortcut
 echo Создание ярлыка в меню Пуск...
 set "STARTMENU_DIR=%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\TimeScreen Control"
 mkdir "%STARTMENU_DIR%" 2>nul
@@ -123,39 +130,40 @@ del "%TEMP%\create_shortcut.vbs" 2>nul
 echo [OK] Ярлык создан
 echo.
 
-REM Register Windows Service using sc directly
+REM Register Windows Service (onedir EXE - no PID change)
 echo Регистрация службы Windows...
-sc query TimeScreenControl >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [INFO] Служба уже существует, удаляем...
-    sc stop TimeScreenControl >nul 2>&1
-    timeout /t 2 /nobreak >nul
-    sc delete TimeScreenControl >nul 2>&1
-    timeout /t 2 /nobreak >nul
-)
-sc create TimeScreenControl binPath= "\"%INSTALL_DIR%\TimeScreenControl.exe\" --service" start= auto DisplayName= "TimeScreen Control Service"
-if errorlevel 1 (
-    echo [ERROR] Не удалось зарегистрировать службу
-    echo Проверьте, что файл TimeScreenControl.exe находится в %INSTALL_DIR%
-    echo и запустите install.bat от имени Администратора
-    pause
-    exit /b 1
-)
-echo [OK] Служба зарегистрирована
+if exist "%INSTALL_DIR%\TimeScreenService\TimeScreenService.exe" (
+    sc query TimeScreenControl >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo [INFO] Служба уже существует, удаляем...
+        sc stop TimeScreenControl >nul 2>&1
+        timeout /t 2 /nobreak >nul
+        sc delete TimeScreenControl >nul 2>&1
+        timeout /t 2 /nobreak >nul
+    )
+    sc create TimeScreenControl binPath= "\"%INSTALL_DIR%\TimeScreenService\TimeScreenService.exe\"" start= auto DisplayName= "TimeScreen Control Service"
+    if errorlevel 1 (
+        echo [ERROR] Не удалось зарегистрировать службу
+        pause
+        exit /b 1
+    )
+    echo [OK] Служба зарегистрирована
 
-REM Start the service
-echo Запуск службы...
-sc start TimeScreenControl
-if errorlevel 1 (
-    echo [WARN] Не удалось запустить службу автоматически
-    echo Служба будет запущена при следующей перезагрузке
-    echo Или запустите вручную через services.msc
+    REM Start the service
+    echo Запуск службы...
+    sc start TimeScreenControl
+    if errorlevel 1 (
+        echo [WARN] Не удалось запустить службу автоматически
+        echo Служба будет запущена при следующей перезагрузке
+    ) else (
+        echo [OK] Служба запущена
+    )
 ) else (
-    echo [OK] Служба запущена
+    echo [WARN] TimeScreenService.exe не найден - служба не установлена
 )
 echo.
 
-REM Create initial config if not exists
+REM Create initial config
 if not exist "%CONFIG_DIR%\pc_config.json" (
     echo Создание начальной конфигурации...
     echo {"enabled": false, "password_hash": "", "show_timer": true, "timer_position": "top-right", "controlled_users": [], "time_limits": {}} > "%CONFIG_DIR%\pc_config.json"
@@ -174,13 +182,10 @@ echo Для запуска настроек:
 echo   - Используйте ярлык "Настройки TimeScreen" в меню Пуск
 echo   - Или запустите "%INSTALL_DIR%\TimeScreenControl.exe"
 echo.
-echo Служба установлена и запущена.
-echo Защита АКТИВНА только если включена в настройках программы.
-echo.
 echo Для включения защиты:
 echo   1. Откройте настройки
-echo   2. Установите пароль администратора (если ещё не установлен)
-echo   3. На вкладке "Общие" включите "Включить защиту"
-echo   4. Добавьте пользователей и настройте интервалы
+echo   2. Установите пароль администратора (вкладка "Система")
+echo   3. Добавьте пользователей и интервалы (вкладка "Настройки")
+echo   4. Включите защиту
 echo.
 pause

@@ -1,10 +1,10 @@
 @echo off
-chcp 65001 >nul
+chcp 1251 >nul
 setlocal enabledelayedexpansion
 
-echo ════════════════════════════════════════════
-echo   TimeScreen Control - Сборка в EXE
-echo ════════════════════════════════════════════
+echo ============================================
+echo   TimeScreen Control - Сборка
+echo ============================================
 echo.
 
 REM Check if PyInstaller is installed
@@ -14,17 +14,15 @@ if errorlevel 1 (
     python -m pip install pyinstaller
 )
 
-echo.
-echo 📦 Сборка исполняемого файла...
-echo.
-
 REM Create dist directory
 if not exist "dist" mkdir dist
+if not exist "dist\Release" mkdir "dist\Release"
 
-REM Run PyInstaller with all necessary options
-REM Using python -m PyInstaller as requested
-REM IMPORTANT: --windowed for GUI, but service needs console
-REM We'll build ONE file that works for both (console app)
+REM --------------------------------------------------
+REM [1/2] Build GUI EXE (onefile, windowed, with icon)
+REM --------------------------------------------------
+echo.
+echo [1/2] Сборка GUI (TimeScreenControl.exe)...
 python -m PyInstaller --noconfirm --clean ^
     --name "TimeScreenControl" ^
     --icon "src/resources/icon.ico" ^
@@ -36,56 +34,79 @@ python -m PyInstaller --noconfirm --clean ^
     --hidden-import tkinter ^
     --hidden-import tkinter.ttk ^
     --hidden-import bcrypt ^
+    --onefile ^
+    --windowed ^
+    src/main.py
+
+if errorlevel 1 (
+    echo [ERROR] Ошибка сборки GUI!
+    pause
+    exit /b 1
+)
+echo [OK] GUI собран
+
+REM Fix spec for windowed (PyInstaller may overwrite)
+python -c "import re; f=open('TimeScreenControl.spec','r+'); c=f.read(); f.seek(0); f.write(c.replace('console=True','console=False')); f.close()"
+
+REM --------------------------------------------------
+REM [2/2] Build Service EXE (onedir - REQUIRED for SCM)
+REM --------------------------------------------------
+echo.
+echo [2/2] Сборка службы (TimeScreenService)...
+python -m PyInstaller --noconfirm --clean ^
+    --name "TimeScreenService" ^
+    --add-data "src/config;config" ^
+    --add-data "src/service;service" ^
+    --add-data "src/utils;utils" ^
     --hidden-import win32serviceutil ^
     --hidden-import win32service ^
     --hidden-import win32event ^
     --hidden-import servicemanager ^
-    --onefile ^
-    src/main.py
+    --hidden-import bcrypt ^
+    --onedir ^
+    src/service_entry.py
 
 if errorlevel 1 (
-    echo ❌ Ошибка сборки!
+    echo [ERROR] Ошибка сборки службы!
     pause
     exit /b 1
 )
+echo [OK] Служба собрана
 
+REM --------------------------------------------------
+REM Prepare Release package
+REM --------------------------------------------------
 echo.
-echo ✅ Сборка завершена успешно!
-echo.
-echo Исполняемый файл: dist\TimeScreenControl.exe
-echo.
-
-REM Create distribution package for end users
 echo Подготовка пакета для распространения...
-if not exist "dist\Release" mkdir "dist\Release"
 
-REM Copy EXE to Release folder
+REM Copy GUI EXE
 copy "dist\TimeScreenControl.exe" "dist\Release\" >nul
 
-REM Copy install scripts to Release folder
+REM Copy Service onedir
+if exist "dist\Release\TimeScreenService" rmdir /s /q "dist\Release\TimeScreenService" 2>nul
+xcopy /E /I /Q /Y "dist\TimeScreenService" "dist\Release\TimeScreenService" >nul
+
+REM Copy install scripts and README
 copy "install\install.bat" "dist\Release\" >nul
 copy "install\uninstall.bat" "dist\Release\" >nul
-
-REM Copy README
 copy "README.md" "dist\Release\" >nul
 
-echo.
-echo ✅ Пакет для распространения готов в dist\Release\
-echo.
-echo ════════════════════════════════════════════
-echo   Готово к распространению!
-echo ════════════════════════════════════════════
-echo.
-echo Для установки на компьютере пользователя:
-echo   1. Скопируйте ВСЁ содержимое папки dist\Release
-echo   2. На целевом компьютере запустите install.bat
-echo      ОТ ИМЕНИ АДМИНИСТРАТОРА
-echo.
-echo Содержимое пакета:
-echo   - TimeScreenControl.exe  (программа)
-echo   - install.bat            (установка)
-echo   - uninstall.bat          (удаление)
-echo   - README.md              (документация)
-echo.
+echo [OK] Пакет готов
 
+echo.
+echo ============================================
+echo   Сборка завершена!
+echo ============================================
+echo.
+echo Состав пакета (dist\Release\):
+echo   - TimeScreenControl.exe     (GUI, onefile)
+echo   - TimeScreenService\        (Служба, onedir)
+echo   - install.bat               (Установка)
+echo   - uninstall.bat             (Удаление)
+echo   - README.md                 (Документация)
+echo.
+echo Для установки:
+echo   1. Скопируйте ВСЮ папку dist\Release на целевой ПК
+echo   2. Запустите install.bat от имени Администратора
+echo.
 pause
