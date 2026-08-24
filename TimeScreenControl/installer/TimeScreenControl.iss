@@ -63,6 +63,9 @@ Filename: "{sys}\sc.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden wa
 Filename: "{sys}\sc.exe"; Parameters: "delete {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteTimeScreenService"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM TimeScreenControl.exe"; Flags: runhidden waituntilterminated; RunOnceId: "StopTimeScreenGui"
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{commonappdata}\TimeScreen"
+
 [Code]
 var
   ServiceWasVerified: Boolean;
@@ -282,10 +285,18 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
+  ConfigDir: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
     RunHidden(ExpandConstant('{sys}\sc.exe'), 'delete {#ServiceName}', ResultCode);
-    Log('Конфигурация в ProgramData сохранена для последующей установки.');
+    ConfigDir := ExpandConstant('{commonappdata}\TimeScreen');
+    if DirExists(ConfigDir) then
+    begin
+      if DelTree(ConfigDir, True, True, True) then
+        Log('Конфигурация TimeScreen полностью удалена.')
+      else
+        Log('Не удалось полностью удалить конфигурацию: ' + ConfigDir);
+    end;
   end;
 end;
