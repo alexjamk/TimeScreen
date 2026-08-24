@@ -114,6 +114,13 @@ copy "install\install.bat" "dist\Release\" >nul
 copy "install\uninstall.bat" "dist\Release\" >nul
 copy "README.md" "dist\Release\" >nul
 
+REM Build standard graphical Setup.exe
+call "installer\build_installer.bat"
+if errorlevel 1 (
+    echo [ERROR] Не удалось собрать графический установщик
+    exit /b 1
+)
+
 echo [OK] Пакет готов
 
 echo.
@@ -128,9 +135,12 @@ echo   - install.bat               (Установка)
 echo   - uninstall.bat             (Удаление)
 echo   - README.md                 (Документация)
 echo.
+echo Графический установщик:
+echo   - dist\Installer\TimeScreenControl-Setup-3.0.exe
+echo.
 echo Для установки:
-echo   1. Скопируйте ВСЮ папку dist\Release на целевой ПК
-echo   2. Запустите install.bat от имени Администратора
+echo   1. Скопируйте TimeScreenControl-Setup-3.0.exe на целевой ПК
+echo   2. Запустите установщик и следуйте указаниям мастера
 echo.
 rmdir /s /q "%PYI_ROOT%" >nul 2>&1
 pause

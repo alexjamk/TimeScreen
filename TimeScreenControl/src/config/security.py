@@ -84,9 +84,10 @@ def compute_hash(data: dict, key: Optional[bytes] = None) -> str:
         Integrity digest. When key is supplied this is an HMAC-SHA256 digest.
     """
     clean = {k: v for k, v in data.items() if k != "_hash"}
-    payload = json.dumps(clean, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    encoded = payload.encode("utf-8")
     if key is not None:
+        payload = json.dumps(clean, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        encoded = payload.encode("utf-8")
         return hmac.new(key, encoded, hashlib.sha256).hexdigest()
     # Retained only for recognizing and migrating configurations from v3.0.
-    return hashlib.sha256(encoded).hexdigest()[:16]
+    legacy_payload = json.dumps(clean, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(legacy_payload.encode("utf-8")).hexdigest()[:16]

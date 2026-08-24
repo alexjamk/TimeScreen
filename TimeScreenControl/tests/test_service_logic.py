@@ -48,5 +48,47 @@ class TestServiceUserScoping(unittest.TestCase):
         self.assertEqual(service.actions, [("unlock", 7)])
 
 
+class FakeUnlockConfig:
+    def __init__(self, expected_password="4272", save_ok=True):
+        self.expected_password = expected_password
+        self.save_ok = save_ok
+        self.last_error = ""
+        self.grace_was_set = False
+
+    def verify_password(self, password):
+        return password == self.expected_password
+
+    def set_grace(self):
+        self.grace_was_set = self.save_ok
+        return self.save_ok
+
+
+class TestServicePasswordUnlock(unittest.TestCase):
+    def make_service(self):
+        service = TimeScreenService.__new__(TimeScreenService)
+        service._failed_unlocks = []
+        return service
+
+    def test_test_password_grants_grace(self):
+        service = self.make_service()
+        config = FakeUnlockConfig()
+        with patch("service.daemon.ConfigManager", return_value=config):
+            response = service._handle_unlock_request(
+                {"command": "grant_grace", "password": "4272"}
+            )
+        self.assertEqual(response, {"ok": True})
+        self.assertTrue(config.grace_was_set)
+
+    def test_wrong_password_does_not_grant_grace(self):
+        service = self.make_service()
+        config = FakeUnlockConfig()
+        with patch("service.daemon.ConfigManager", return_value=config), patch("service.daemon.time.sleep"):
+            response = service._handle_unlock_request(
+                {"command": "grant_grace", "password": "wrong"}
+            )
+        self.assertFalse(response["ok"])
+        self.assertFalse(config.grace_was_set)
+
+
 if __name__ == "__main__":
     unittest.main()
