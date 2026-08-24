@@ -100,34 +100,24 @@ if exist "%INSTALL_DIR%" (
 )
 echo.
 
-REM Ask about config preservation
+REM Remove all machine-wide settings
 echo ============================================
 echo.
-set /p preserve="Сохранить конфигурацию (настройки пользователей)? (Y/N): "
-if /i "!preserve!"=="Y" (
-    echo [INFO] Конфигурация сохранена в %CONFIG_DIR%
-    echo       При следующей установке настройки будут восстановлены
-) else (
-    if exist "%CONFIG_DIR%" (
-        rmdir /s /q "%CONFIG_DIR%" 2>nul
-        if errorlevel 1 (
-            echo [WARN] Не удалось удалить конфигурацию (файл может быть открыт)
-            echo       Удалите вручную: %CONFIG_DIR%
-        ) else (
-            echo [OK] Конфигурация удалена
-        )
+if exist "%CONFIG_DIR%" (
+    rmdir /s /q "%CONFIG_DIR%" 2>nul
+    if errorlevel 1 (
+        echo [WARN] Не удалось удалить конфигурацию ^(файл может быть открыт^)
+        echo       Удалите вручную: %CONFIG_DIR%
     ) else (
-        echo [INFO] Конфигурация не найдена
+        echo [OK] Конфигурация удалена
     )
+) else (
+    echo [INFO] Конфигурация не найдена
 )
 echo.
 
 echo ============================================
 echo   [OK] Удаление завершено!
 echo ============================================
-echo.
-echo Если вы планируете переустановку:
-echo   - Выберите Y для сохранения настроек
-echo   - Выберите N для полного сброса
 echo.
 pause
