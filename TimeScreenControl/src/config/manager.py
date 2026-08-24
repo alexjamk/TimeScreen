@@ -205,8 +205,8 @@ class ConfigManager:
         return bool(self.config.get("password_hash"))
 
     def set_password(self, password: str) -> bool:
-        if len(password) < 8:
-            self.last_error = "Пароль должен содержать не менее 8 символов"
+        if len(password) < 4:
+            self.last_error = "Пароль должен содержать не менее 4 символов"
             return False
         hashed = hash_password(password)
         return self._mutate(lambda data: data.update(password_hash=hashed) is None)

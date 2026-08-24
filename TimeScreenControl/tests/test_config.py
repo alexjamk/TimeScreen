@@ -57,10 +57,10 @@ class TestConfigManager(TemporaryConfigMixin, unittest.TestCase):
         self.assertEqual(self.cfg.get_intervals(), [])
         self.assertEqual(self.cfg.get_timer_position(), (100, 100))
 
-    def test_password_requires_eight_characters(self):
-        self.assertFalse(self.cfg.set_password("short"))
-        self.assertTrue(self.cfg.set_password("testpass123"))
-        self.assertTrue(self.cfg.verify_password("testpass123"))
+    def test_password_requires_four_characters(self):
+        self.assertFalse(self.cfg.set_password("123"))
+        self.assertTrue(self.cfg.set_password("4272"))
+        self.assertTrue(self.cfg.verify_password("4272"))
 
     def test_interval_crud(self):
         self.assertTrue(self.cfg.add_interval("08:00", "20:00", [0, 1]))

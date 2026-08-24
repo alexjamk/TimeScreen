@@ -130,7 +130,7 @@ class SetPasswordDialog(simpledialog.Toplevel):
         
         info_label = ttk.Label(
             main_frame,
-            text="Пароль должен быть минимум 8 символов.\nЗапишите его в надёжном месте!",
+            text="Пароль должен быть минимум 4 символа.\nЗапишите его в надёжном месте!",
             justify=tk.CENTER
         )
         info_label.pack(pady=(0, 15))
@@ -181,8 +181,8 @@ class SetPasswordDialog(simpledialog.Toplevel):
         password = self.password_var.get()
         confirm = self.confirm_var.get()
         
-        if len(password) < 8:
-            self.status_label.config(text="Пароль должен быть минимум 8 символов")
+        if len(password) < 4:
+            self.status_label.config(text="Пароль должен быть минимум 4 символа")
             return
         
         if password != confirm:
