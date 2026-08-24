@@ -4,8 +4,11 @@ Draggable, configurable timer showing remaining time.
 """
 
 import tkinter as tk
-from tkinter import ttk
-from typing import Optional, Tuple
+from typing import Optional
+import json
+import os
+
+from config.paths import TIMER_STATE_PATH
 
 
 class TimerOverlay:
@@ -34,6 +37,7 @@ class TimerOverlay:
         
         # Update callback
         self._update_id = None
+        self._preview_mode = False
     
     def create(self):
         """Create the timer window."""
@@ -45,7 +49,7 @@ class TimerOverlay:
         self.window.attributes("-topmost", True)
         
         # Set position from config
-        x, y = self.cfg.get_timer_position()
+        x, y = self._get_user_position()
         self.window.geometry(f"+{x}+{y}")
         
         # Semi-transparent background frame
@@ -70,13 +74,12 @@ class TimerOverlay:
         )
         self.label.pack()
         
-        # Bind drag events
-        self.frame.bind("<ButtonPress-1>", self._on_drag_start)
-        self.frame.bind("<ButtonRelease-1>", self._on_drag_end)
-        self.frame.bind("<B1-Motion>", self._on_drag_motion)
-        
-        # Bind right-click for context menu
-        self.frame.bind("<Button-3>", self._show_context_menu)
+        # Bind drag/context events to both frame and label so dragging works on text.
+        for widget in (self.frame, self.label):
+            widget.bind("<ButtonPress-1>", self._on_drag_start)
+            widget.bind("<ButtonRelease-1>", self._on_drag_end)
+            widget.bind("<B1-Motion>", self._on_drag_motion)
+            widget.bind("<Button-3>", self._show_context_menu)
         
         # Initially hide if configured
         if not self.cfg.show_timer():
@@ -87,10 +90,18 @@ class TimerOverlay:
     def destroy(self):
         """Destroy the timer window."""
         if self._update_id:
-            self.parent.after_cancel(self._update_id)
+            try:
+                self.parent.after_cancel(self._update_id)
+            except tk.TclError:
+                pass
+            self._update_id = None
         
         if self.window:
-            self.window.destroy()
+            try:
+                if self.window.winfo_exists():
+                    self.window.destroy()
+            except tk.TclError:
+                pass
             self.window = None
             self.frame = None
             self.label = None
@@ -118,7 +129,7 @@ class TimerOverlay:
         x = self.window.winfo_x()
         y = self.window.winfo_y()
         
-        self.cfg.set_timer_position(x, y)
+        self._save_user_position(x, y)
     
     def _show_context_menu(self, event):
         """Show context menu on right-click."""
@@ -139,21 +150,38 @@ class TimerOverlay:
         """Reset timer position to default."""
         if self.window:
             self.window.geometry("+100+100")
-            self.cfg.set_timer_position(100, 100)
+            self._save_user_position(100, 100)
+
+    def _get_user_position(self):
+        """Read movable UI state from the current user's profile, not shared config."""
+        try:
+            data = json.loads(TIMER_STATE_PATH.read_text(encoding="utf-8"))
+            x, y = data["position"]
+            return int(x), int(y)
+        except (OSError, ValueError, KeyError, TypeError):
+            return self.cfg.get_timer_position()
+
+    @staticmethod
+    def _save_user_position(x, y):
+        try:
+            TIMER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temp = TIMER_STATE_PATH.with_suffix(".tmp")
+            temp.write_text(json.dumps({"position": [int(x), int(y)]}), encoding="utf-8")
+            os.replace(str(temp), str(TIMER_STATE_PATH))
+        except OSError:
+            pass
     
     def show(self):
         """Show the timer."""
         if self.window:
             self.window.deiconify()
             self._visible = True
-            self.cfg.set_show_timer(True)
     
     def hide(self):
         """Hide the timer."""
         if self.window:
             self.window.withdraw()
             self._visible = False
-            self.cfg.set_show_timer(False)
     
     def toggle(self):
         """Toggle visibility."""
@@ -165,49 +193,97 @@ class TimerOverlay:
     def update_time(self, seconds: Optional[int], event_type: str):
         """
         Update timer display.
-        
+
         Args:
             seconds: Seconds until event, or None
-            event_type: "lock", "unlock", or "blocked_no_schedule"
+            event_type: "lock", "unlock", "grace", or "blocked_no_schedule"
         """
         if self.label is None:
             return
-        
+
         if seconds is None:
             if event_type == "blocked_no_schedule":
-                self.label.config(text="🔒 ЗАБЛОКИРОВАНО", fg="#e94560")
+                self.label.config(text="Заблокировано", fg="#e94560")
             else:
-                self.label.config(text="⏸️ Пауза", fg="#ffd700")
+                self.label.config(text="Пауза", fg="#ffd700")
+            return
+
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+
+        if event_type == "grace":
+            self.label.config(text=f"Грейс {minutes:02d}:{secs:02d}", fg="#ffd43b")
+        elif event_type == "lock":
+            self.label.config(text=f"До блокировки {hours:02d}:{minutes:02d}:{secs:02d}", fg="#ff6b6b")
         else:
-            hours = seconds // 3600
-            minutes = (seconds % 3600) // 60
-            secs = seconds % 60
-            
-            if event_type == "lock":
-                # Counting down to lock
-                self.label.config(
-                    text=f"🔒 {hours:02d}:{minutes:02d}:{secs:02d}",
-                    fg="#ff6b6b"
-                )
-            else:
-                # Counting down to unlock
-                self.label.config(
-                    text=f"🔓 {hours:02d}:{minutes:02d}:{secs:02d}",
-                    fg="#51cf66"
-                )
-    
+            self.label.config(text=f"До разблокировки {hours:02d}:{minutes:02d}:{secs:02d}", fg="#51cf66")
     def start_updates(self):
         """Start periodic timer updates."""
+        self._preview_mode = False
         self._do_update()
-    
+
+    def start_preview(self):
+        """Show a movable preview without requiring protection to be enabled."""
+        self._preview_mode = True
+        self.update_time(10 * 60, "grace")
+
     def _do_update(self):
         """Perform timer update and schedule next."""
+        if self._preview_mode:
+            return
+
         from config.manager import ConfigManager
-        
+
         cfg = ConfigManager(read_only=True)
         seconds, event_type = cfg.get_next_event()
-        
+
         self.update_time(seconds, event_type)
-        
+
         # Schedule next update in 1 second
         self._update_id = self.parent.after(1000, self._do_update)
+
+
+def run_timer_overlay():
+    """Run the timer overlay as a standalone process."""
+    from config.manager import ConfigManager
+    from config.paths import AGENT_PID
+
+    cfg = ConfigManager(read_only=True)
+    username = os.environ.get("USERNAME", "")
+    if not cfg.is_enabled() or not cfg.show_timer() or not cfg.is_controlled_user(username):
+        return
+
+    root = tk.Tk()
+    root.withdraw()
+
+    try:
+        AGENT_PID.parent.mkdir(parents=True, exist_ok=True)
+        AGENT_PID.write_text(str(os.getpid()), encoding="utf-8")
+    except Exception:
+        pass
+
+    overlay = TimerOverlay(root, cfg)
+    overlay.create()
+    overlay.show()
+    overlay.start_updates()
+
+    def monitor_config():
+        current = ConfigManager(read_only=True)
+        if (not current.is_enabled() or not current.show_timer()
+                or not current.is_controlled_user(os.environ.get("USERNAME", ""))):
+            root.quit()
+            return
+        root.after(1000, monitor_config)
+
+    root.after(1000, monitor_config)
+
+    try:
+        root.mainloop()
+    finally:
+        overlay.destroy()
+        try:
+            if AGENT_PID.exists():
+                AGENT_PID.unlink()
+        except Exception:
+            pass

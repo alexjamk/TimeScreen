@@ -70,6 +70,8 @@ REM Set paths
 set "INSTALL_DIR=%PROGRAMFILES%\TimeScreenControl"
 set "CONFIG_DIR=%PROGRAMDATA%\TimeScreen"
 
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v TimeScreenTimer /f >nul 2>&1
+
 REM Remove start menu shortcuts
 echo ”даление €рлыков...
 set "STARTMENU_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\TimeScreen Control"

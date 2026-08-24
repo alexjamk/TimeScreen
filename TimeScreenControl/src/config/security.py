@@ -4,6 +4,7 @@ Password hashing with bcrypt for maximum security.
 """
 
 import hashlib
+import hmac
 import json
 from typing import Optional
 
@@ -16,7 +17,7 @@ except ImportError:
 
 def hash_password(password: str) -> str:
     """
-    Hash password using bcrypt (preferred) or SHA-256 fallback.
+    Hash password using bcrypt. Missing bcrypt is a hard error.
     
     Args:
         password: Plain text password
@@ -24,16 +25,10 @@ def hash_password(password: str) -> str:
     Returns:
         Hashed password string
     """
-    if BCRYPT_AVAILABLE:
-        salt = bcrypt.gensalt(rounds=12)
-        return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
-    else:
-        # Fallback to SHA-256 with salt (less secure but works without dependencies)
-        import secrets
-        salt = secrets.token_hex(16)
-        salted = salt + password
-        hash_obj = hashlib.sha256(salted.encode('utf-8'))
-        return f"$sha256${salt}${hash_obj.hexdigest()}"
+    if not BCRYPT_AVAILABLE:
+        raise RuntimeError("bcrypt is required to create password hashes")
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 
 def verify_password(password: str, hashed: str) -> bool:
@@ -78,7 +73,7 @@ def verify_password(password: str, hashed: str) -> bool:
     return False
 
 
-def compute_hash(data: dict) -> str:
+def compute_hash(data: dict, key: Optional[bytes] = None) -> str:
     """
     Compute integrity hash for configuration data.
     
@@ -86,8 +81,12 @@ def compute_hash(data: dict) -> str:
         data: Configuration dictionary (without _hash field)
         
     Returns:
-        Short hash string for integrity verification
+        Integrity digest. When key is supplied this is an HMAC-SHA256 digest.
     """
     clean = {k: v for k, v in data.items() if k != "_hash"}
-    payload = json.dumps(clean, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+    payload = json.dumps(clean, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    encoded = payload.encode("utf-8")
+    if key is not None:
+        return hmac.new(key, encoded, hashlib.sha256).hexdigest()
+    # Retained only for recognizing and migrating configurations from v3.0.
+    return hashlib.sha256(encoded).hexdigest()[:16]
