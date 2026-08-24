@@ -5,6 +5,8 @@ Scrollable list of Windows users for selection.
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+import json
+import os
 import subprocess
 from typing import List
 
@@ -16,40 +18,42 @@ def get_all_windows_users() -> List[str]:
     Returns:
         List of usernames (excluding system accounts)
     """
+    exclude = {
+        'Administrator', 'Guest', 'DefaultAccount',
+        'WDAGUtilityAccount', 'DefaultAppPool', 'IUSR', 'IWAM',
+        'Администратор', 'Гость',
+    }
+
+    users = set()
+    current = os.environ.get("USERNAME")
+    if current:
+        users.add(current)
+
     try:
+        command = (
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+            "Get-LocalUser | Where-Object { $_.Enabled -eq $true } | "
+            "Select-Object -ExpandProperty Name | ConvertTo-Json"
+        )
         result = subprocess.run(
-            ["net", "user"],
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
             capture_output=True,
-            text=True,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
         )
-        
-        users = []
-        lines = result.stdout.split('\n')
-        
-        for line in lines:
-            line = line.strip()
-            # Skip header/footer lines
-            if not line or line.startswith('-') or 'User accounts' in line or 'command completed' in line.lower():
-                continue
-            
-            # Parse user names (they are space-separated in columns)
-            parts = line.split()
-            for part in parts:
-                if part and not part.startswith('-'):
-                    users.append(part)
-        
-        # Exclude system accounts
-        exclude = {
-            'Administrator', 'Guest', 'DefaultAccount', 
-            'WDAGUtilityAccount', 'DefaultAppPool', 'IUSR', 'IWAM'
-        }
-        
-        return sorted([u for u in users if u not in exclude and not u.startswith('$')])
-        
+        if result.returncode == 0 and result.stdout:
+            raw = result.stdout.decode("utf-8-sig", errors="replace").strip()
+            parsed = json.loads(raw) if raw else []
+            if isinstance(parsed, str):
+                parsed = [parsed]
+            users.update(parsed)
     except Exception as e:
-        print(f"Error getting users: {e}")
-        return []
+        print(f"Error getting users via PowerShell: {e}")
+
+    visible_users = [
+        u for u in users
+        if u and u not in exclude and not u.endswith('$')
+    ]
+    return sorted(visible_users, key=lambda u: (u.lower() != (current or "").lower(), u.lower()))
 
 
 class UserSelector(ttk.Frame):
@@ -66,7 +70,7 @@ class UserSelector(ttk.Frame):
     def __init__(self, parent, config_manager):
         super().__init__(parent)
         self.cfg = config_manager
-        self.selected_users = set(cfg.get_controlled_users())
+        self.selected_users = set(self.cfg.get_controlled_users())
         self.checkboxes = {}
         
         self._build_ui()
@@ -84,7 +88,7 @@ class UserSelector(ttk.Frame):
         
         info = ttk.Label(
             self,
-            text="Если список пустой - контролируются ВСЕ пользователи",
+            text="Если список пустой — не контролируется ни один пользователь",
             foreground="blue"
         )
         info.pack(pady=5)
@@ -194,7 +198,7 @@ class UserSelector(ttk.Frame):
         users_list = sorted(list(self.selected_users))
         
         if self.cfg.set_controlled_users(users_list):
-            status = "все пользователи" if not users_list else f"{len(users_list)} пользователей"
+            status = "никто" if not users_list else f"{len(users_list)} пользователей"
             messagebox.showinfo(
                 "Сохранено",
                 f"Контролируемые пользователи сохранены.\n\n"

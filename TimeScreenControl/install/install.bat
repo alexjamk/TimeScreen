@@ -76,6 +76,14 @@ if not exist "%CONFIG_DIR%" (
     )
 )
 echo [OK] Каталоги созданы
+
+REM Protect settings: SYSTEM and Administrators write, regular Users read only
+icacls "%CONFIG_DIR%" /inheritance:r /grant:r *S-1-5-18:^(OI^)^(CI^)F *S-1-5-32-544:^(OI^)^(CI^)F *S-1-5-32-545:^(OI^)^(CI^)RX /T /C >nul 2>&1
+if errorlevel 1 (
+    echo [WARN] Не удалось настроить права на каталог данных
+) else (
+    echo [OK] Права на каталог данных настроены
+)
 echo.
 
 REM Copy GUI EXE
@@ -141,7 +149,7 @@ if exist "%INSTALL_DIR%\TimeScreenService\TimeScreenService.exe" (
         sc delete TimeScreenControl >nul 2>&1
         timeout /t 2 /nobreak >nul
     )
-    sc create TimeScreenControl binPath= "\"%INSTALL_DIR%\TimeScreenService\TimeScreenService.exe\"" start= auto DisplayName= "TimeScreen Control Service"
+    "%INSTALL_DIR%\TimeScreenService\TimeScreenService.exe" --startup auto install
     if errorlevel 1 (
         echo [ERROR] Не удалось зарегистрировать службу
         pause
@@ -158,15 +166,19 @@ if exist "%INSTALL_DIR%\TimeScreenService\TimeScreenService.exe" (
     ) else (
         echo [OK] Служба запущена
     )
+    sc failure TimeScreenControl reset= 86400 actions= restart/5000/restart/15000/restart/30000 >nul 2>&1
 ) else (
     echo [WARN] TimeScreenService.exe не найден - служба не установлена
 )
 echo.
 
+REM Start timer in every interactive session; it exits for uncontrolled users
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v TimeScreenTimer /t REG_SZ /d "\"%INSTALL_DIR%\TimeScreenControl.exe\" --timer-mode" /f >nul 2>&1
+
 REM Create initial config
 if not exist "%CONFIG_DIR%\pc_config.json" (
     echo Создание начальной конфигурации...
-    echo {"enabled": false, "password_hash": "", "show_timer": true, "timer_position": "top-right", "controlled_users": [], "time_limits": {}} > "%CONFIG_DIR%\pc_config.json"
+    echo {"enabled": false, "password_hash": null, "intervals": [], "show_timer": true, "timer_position": [100, 100], "controlled_users": [], "grace_until": null} > "%CONFIG_DIR%\pc_config.json"
     echo [OK] Конфигурация создана
     echo.
     echo [INFO] При первом запуске настроек вам будет предложено

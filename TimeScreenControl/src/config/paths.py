@@ -11,6 +11,8 @@ PROGRAM_DATA = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "TimeScr
 
 # Configuration file
 CONFIG_PATH = PROGRAM_DATA / "pc_config.json"
+INTEGRITY_KEY_PATH = PROGRAM_DATA / "integrity.key"
+CONFIG_LOCK_PATH = PROGRAM_DATA / "config.lock"
 
 # Log file
 LOG_PATH = PROGRAM_DATA / "service.log"
@@ -18,9 +20,15 @@ LOG_PATH = PROGRAM_DATA / "service.log"
 # Named Mutex for lock state (more secure than file flag)
 LOCK_MUTEX_NAME = "Global\\TimeScreenLock"
 
-# PID files
+# PID files. The timer PID is per-user and must not make the shared config writable.
 SERVICE_PID = PROGRAM_DATA / "service.pid"
-AGENT_PID = PROGRAM_DATA / "agent.pid"
+LOCAL_APP_DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+USER_DATA = LOCAL_APP_DATA / "TimeScreen"
+AGENT_PID = USER_DATA / "agent.pid"
+TIMER_STATE_PATH = USER_DATA / "timer_state.json"
+
+# Local authenticated command channel exposed by the SYSTEM service.
+SERVICE_PIPE_NAME = r"\\.\pipe\TimeScreenControl"
 
 # Installation directory (Program Files for all users)
 INSTALL_DIR = Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "TimeScreenControl"

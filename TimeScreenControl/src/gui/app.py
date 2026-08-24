@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +15,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.manager import ConfigManager
-from config.security import hash_password
+from config.paths import AGENT_PID
 from gui.dialogs import PasswordDialog, SetPasswordDialog, ConfirmDialog
 from gui.components.user_selector import UserSelector
 from gui.components.interval_editor import IntervalEditor
@@ -44,7 +45,7 @@ class SettingsApp:
         
         # Try to load icon
         try:
-            icon_path = Path(__file__).parent / "resources" / "icon.ico"
+            icon_path = Path(__file__).parent.parent / "resources" / "icon.ico"
             if icon_path.exists():
                 self.root.iconbitmap(str(icon_path))
         except Exception:
@@ -52,13 +53,19 @@ class SettingsApp:
         
         # Initialize config
         self.cfg = ConfigManager(read_only=False)
+        self.timer_overlay: Optional[TimerOverlay] = None
+        if self.cfg.config.get("_tampered"):
+            messagebox.showerror(
+                "Конфигурация повреждена",
+                "Настройки заблокированы: " + self.cfg.config.get("_tamper_reason", "неверная подпись"),
+                parent=self.root,
+            )
+            self.root.after(100, self.root.destroy)
+            return
         
         # Authentication state
         self.authenticated = False
         self.admin_password_set = self.cfg.has_password()
-        
-        # Timer overlay reference
-        self.timer_overlay: Optional[TimerOverlay] = None
         
         # Center window
         self._center_window()
@@ -72,7 +79,7 @@ class SettingsApp:
         
         # Start timer overlay if enabled
         if self.cfg.show_timer() and self.cfg.is_enabled():
-            self.root.after(500, self._start_timer_overlay)
+            self.root.after(500, self._start_timer_process)
     
     def _center_window(self):
         """Center window on screen."""
@@ -92,35 +99,26 @@ class SettingsApp:
         """
         if not self.admin_password_set:
             # No password set - force setup
-            result = messagebox.askyesnocancel(
+            result = messagebox.askokcancel(
                 "Первый запуск",
                 "Пароль администратора не установлен.\n\n"
-                "Хотите установить пароль сейчас?\n"
-                "Без пароля настройки не будут защищены.",
+                "Для защиты настроек необходимо установить пароль.",
                 parent=self.root
             )
             
-            if result is None:  # Cancel
+            if not result:
                 return False
-            
-            if result:  # Yes
-                dialog = SetPasswordDialog(self.root, "Установка пароля администратора")
-                if dialog.result:
-                    if self.cfg.set_password(dialog.result):
-                        self.authenticated = True
-                        self.admin_password_set = True
-                        messagebox.showinfo(
-                            "Успешно",
-                            "Пароль установлен!\nЗапомните его - без пароля вы не сможете изменить настройки.",
-                            parent=self.root
-                        )
-                    else:
-                        messagebox.showerror("Ошибка", "Не удалось сохранить пароль", parent=self.root)
-                        return False
-                else:
-                    return False
-            else:  # No - proceed without password
+            dialog = SetPasswordDialog(self.root, "Установка пароля администратора")
+            if dialog.result and self.cfg.set_password(dialog.result):
                 self.authenticated = True
+                self.admin_password_set = True
+                messagebox.showinfo(
+                    "Успешно", "Пароль установлен. Запомните его.", parent=self.root
+                )
+            else:
+                if dialog.result:
+                    messagebox.showerror("Ошибка", self.cfg.last_error or "Не удалось сохранить пароль", parent=self.root)
+                return False
         else:
             # Password exists - require authentication
             dialog = PasswordDialog(self.root, verify_func=self.cfg.verify_password)
@@ -224,27 +222,12 @@ class SettingsApp:
             command=self._change_password
         ).pack(side=tk.LEFT, padx=5)
         
-        ttk.Button(
-            btn_frame,
-            text="🗑️ Удалить пароль",
-            command=self._remove_password
-        ).pack(side=tk.LEFT, padx=5)
-        
         # Info section
         info_box = ttk.LabelFrame(parent, text="ℹ️ Информация", padding=15)
         info_box.pack(fill=tk.BOTH, expand=True, pady=10)
         
-        controlled_count = len(self.cfg.get_controlled_users())
-        intervals_count = len(self.cfg.get_intervals())
-        
-        info_text = f"""
-Статус защиты: {'ВКЛЮЧЕНА' if self.cfg.is_enabled() else 'ВЫКЛЮЧЕНА'}
-Контролируемых пользователей: {controlled_count if controlled_count > 0 else 'ВСЕ'}
-Временных интервалов: {intervals_count}
-Таймер отображается: {'Да' if self.cfg.show_timer() else 'Нет'}
-        """.strip()
-        
-        ttk.Label(info_box, text=info_text, justify=tk.LEFT).pack(anchor=tk.W)
+        self.info_var = tk.StringVar()
+        ttk.Label(info_box, textvariable=self.info_var, justify=tk.LEFT).pack(anchor=tk.W)
     
     def _build_users_tab(self, parent):
         """Build users management tab."""
@@ -417,10 +400,13 @@ class SettingsApp:
             
             # Update timer overlay
             if new_state and self.cfg.show_timer():
-                self._start_timer_overlay()
-            elif not new_state and self.timer_overlay:
-                self.timer_overlay.destroy()
-                self.timer_overlay = None
+                self.cfg.set_show_timer(True)
+                self._start_timer_process()
+            elif not new_state:
+                if self.timer_overlay:
+                    self.timer_overlay.destroy()
+                    self.timer_overlay = None
+                self._stop_timer_process()
         else:
             messagebox.showerror("Ошибка", "Не удалось изменить состояние защиты", parent=self.root)
             self.enabled_var.set(not new_state)
@@ -441,29 +427,6 @@ class SettingsApp:
             else:
                 messagebox.showerror("Ошибка", "Не удалось сохранить пароль", parent=self.root)
     
-    def _remove_password(self):
-        """Remove admin password."""
-        if not ConfirmDialog.ask(
-            self.root,
-            "Подтверждение",
-            "Вы уверены, что хотите удалить пароль?\nНастройки станут незащищёнными!"
-        ):
-            return
-        
-        # Verify current password first
-        dialog = PasswordDialog(self.root, "Подтверждение", verify_func=self.cfg.verify_password)
-        if not dialog.result:
-            return
-        
-        # Clear password
-        self.cfg.config["password_hash"] = None
-        if self.cfg.save():
-            self.admin_password_set = False
-            messagebox.showinfo("Успешно", "Пароль удалён", parent=self.root)
-            self._update_status()
-        else:
-            messagebox.showerror("Ошибка", "Не удалось удалить пароль", parent=self.root)
-    
     def _add_interval(self):
         """Add new time interval."""
         dialog = IntervalEditor(self.root)
@@ -475,8 +438,10 @@ class SettingsApp:
             ):
                 self._load_intervals()
                 self.status_var.set("Интервал добавлен")
+                self._update_status()
             else:
-                messagebox.showerror("Ошибка", "Не удалось добавить интервал", parent=self.root)
+                detail = f"\n\n{self.cfg.last_error}" if getattr(self.cfg, "last_error", "") else ""
+                messagebox.showerror("Ошибка", f"Не удалось добавить интервал{detail}", parent=self.root)
     
     def _edit_interval(self, event=None):
         """Edit selected interval."""
@@ -491,15 +456,15 @@ class SettingsApp:
         if 0 <= index < len(intervals):
             dialog = IntervalEditor(self.root, intervals[index])
             if dialog.result:
-                # Remove old and add new
-                self.cfg.remove_interval(index)
-                if self.cfg.add_interval(
+                if self.cfg.replace_interval(
+                    index,
                     dialog.result["start"],
                     dialog.result["end"],
                     dialog.result["days"]
                 ):
                     self._load_intervals()
                     self.status_var.set("Интервал обновлён")
+                    self._update_status()
                 else:
                     messagebox.showerror("Ошибка", "Не удалось обновить интервал", parent=self.root)
     
@@ -521,6 +486,7 @@ class SettingsApp:
         if self.cfg.remove_interval(index):
             self._load_intervals()
             self.status_var.set("Интервал удалён")
+            self._update_status()
         else:
             messagebox.showerror("Ошибка", "Не удалось удалить интервал", parent=self.root)
     
@@ -536,6 +502,7 @@ class SettingsApp:
         if self.cfg.clear_intervals():
             self._load_intervals()
             self.status_var.set("Все интервалы удалены")
+            self._update_status()
         else:
             messagebox.showerror("Ошибка", "Не удалось очистить интервалы", parent=self.root)
     
@@ -545,11 +512,12 @@ class SettingsApp:
         
         if self.cfg.set_show_timer(show):
             if show:
-                self._start_timer_overlay()
+                self._start_timer_process()
             else:
                 if self.timer_overlay:
                     self.timer_overlay.destroy()
                     self.timer_overlay = None
+                self._stop_timer_process()
             self._update_status()
         else:
             messagebox.showerror("Ошибка", "Не удалось изменить настройку", parent=self.root)
@@ -566,11 +534,13 @@ class SettingsApp:
     
     def _preview_timer(self):
         """Preview timer overlay."""
-        if not self.timer_overlay:
-            self._start_timer_overlay()
+        if self.timer_overlay is None:
+            self.timer_overlay = TimerOverlay(self.root, self.cfg)
+            self.timer_overlay.create()
         
         if self.timer_overlay:
             self.timer_overlay.show()
+            self.timer_overlay.start_preview()
     
     def _start_timer_overlay(self):
         """Start timer overlay."""
@@ -580,15 +550,99 @@ class SettingsApp:
         if self.timer_overlay is None:
             self.timer_overlay = TimerOverlay(self.root, self.cfg)
             self.timer_overlay.create()
-            self.timer_overlay.start_updates()
+
+        self.timer_overlay.show()
+        self.timer_overlay.start_updates()
+
+    def _start_timer_process(self):
+        """Start persistent timer overlay process."""
+        if not self.cfg.show_timer() or not self.cfg.is_enabled():
+            return
+
+        if self._timer_process_running():
+            return
+
+        if self.timer_overlay:
+            self.timer_overlay.destroy()
+            self.timer_overlay = None
+
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--timer-mode"]
+        else:
+            cmd = [sys.executable, str(Path(__file__).parent.parent / "main.py"), "--timer-mode"]
+
+        try:
+            subprocess.Popen(
+                cmd,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
+        except Exception as e:
+            messagebox.showwarning("Таймер", f"Не удалось запустить таймер: {e}", parent=self.root)
+
+    def _stop_timer_process(self):
+        """Stop persistent timer overlay process if it is running."""
+        pid = self._read_timer_pid()
+        if not pid:
+            return
+
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+        except Exception:
+            pass
+
+        try:
+            if AGENT_PID.exists():
+                AGENT_PID.unlink()
+        except Exception:
+            pass
+
+    def _timer_process_running(self) -> bool:
+        """Check if timer overlay process from PID file is still alive."""
+        pid = self._read_timer_pid()
+        if not pid:
+            return False
+
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            return str(pid) in result.stdout
+        except Exception:
+            return False
+
+    def _read_timer_pid(self) -> Optional[int]:
+        """Read timer process PID from ProgramData."""
+        try:
+            if not AGENT_PID.exists():
+                return None
+            return int(AGENT_PID.read_text(encoding="utf-8").strip())
+        except Exception:
+            return None
     
     def _update_status(self):
         """Update status information."""
         protected = "ВКЛЮЧЕНА" if self.cfg.is_enabled() else "ВЫКЛЮЧЕНА"
         users = self.cfg.get_controlled_users()
-        users_str = f"{len(users)} пользователей" if users else "ВСЕ пользователи"
+        users_str = f"{len(users)} пользователей" if users else "НИКТО"
         
         self.status_var.set(f"Защита: {protected} | {users_str}")
+        if hasattr(self, "info_var"):
+            controlled_count = len(users)
+            intervals_count = len(self.cfg.get_intervals())
+            info_text = f"""
+Статус защиты: {protected}
+        Контролируемых пользователей: {controlled_count if controlled_count > 0 else 'НИКТО'}
+Временных интервалов: {intervals_count}
+Таймер отображается: {'Да' if self.cfg.show_timer() else 'Нет'}
+            """.strip()
+            self.info_var.set(info_text)
     
     def run(self):
         """Start the application."""
@@ -596,7 +650,11 @@ class SettingsApp:
         
         # Cleanup
         if self.timer_overlay:
-            self.timer_overlay.destroy()
+            try:
+                self.timer_overlay.destroy()
+            except tk.TclError:
+                pass
+            self.timer_overlay = None
 
 
 def main():
