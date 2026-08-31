@@ -25,6 +25,9 @@ class ConfigManager:
         "show_timer": True,
         "timer_position": [100, 100],
         "grace_until": None,
+        "break_enabled": False,
+        "break_duration_minutes": 10,
+        "work_duration_minutes": 60,
         "_hash": None,
     }
     GRACE_MINUTES = 10
@@ -41,6 +44,8 @@ class ConfigManager:
             "password_hash": None, "intervals": [], "enabled": True,
             "controlled_users": [], "show_timer": False,
             "timer_position": [100, 100], "grace_until": None,
+            "break_enabled": False, "break_duration_minutes": 10,
+            "work_duration_minutes": 60,
             "_tampered": True, "_tamper_reason": reason,
         }
 
@@ -76,6 +81,16 @@ class ConfigManager:
         if raw.get("password_hash") is not None and not isinstance(raw.get("password_hash"), str):
             return False
         if raw.get("grace_until") is not None and not isinstance(raw.get("grace_until"), str):
+            return False
+        if not isinstance(raw.get("break_enabled", False), bool):
+            return False
+        break_minutes = raw.get("break_duration_minutes", 10)
+        work_minutes = raw.get("work_duration_minutes", 60)
+        if (not isinstance(break_minutes, int) or isinstance(break_minutes, bool)
+                or not 1 <= break_minutes <= 180):
+            return False
+        if (not isinstance(work_minutes, int) or isinstance(work_minutes, bool)
+                or not 1 <= work_minutes <= 1440):
             return False
         users = raw.get("controlled_users", [])
         if not isinstance(users, list) or not all(isinstance(user, str) for user in users):
@@ -308,6 +323,32 @@ class ConfigManager:
 
     def set_show_timer(self, show: bool) -> bool:
         return self._mutate(lambda data: data.update(show_timer=bool(show)) is None)
+
+    def get_break_settings(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.config.get("break_enabled", False)),
+            "break_minutes": int(self.config.get("break_duration_minutes", 10)),
+            "work_minutes": int(self.config.get("work_duration_minutes", 60)),
+        }
+
+    def set_break_settings(self, enabled: bool, break_minutes: int, work_minutes: int) -> bool:
+        try:
+            break_value = int(break_minutes)
+            work_value = int(work_minutes)
+        except (TypeError, ValueError):
+            self.last_error = "Продолжительность работы и перерыва должна быть целым числом"
+            return False
+        if not 1 <= break_value <= 180:
+            self.last_error = "Перерыв должен длиться от 1 до 180 минут"
+            return False
+        if not 1 <= work_value <= 1440:
+            self.last_error = "Рабочий период должен длиться от 1 до 1440 минут"
+            return False
+        return self._mutate(lambda data: data.update(
+            break_enabled=bool(enabled),
+            break_duration_minutes=break_value,
+            work_duration_minutes=work_value,
+        ) is None)
 
     def get_timer_position(self) -> Tuple[int, int]:
         pos = self.config.get("timer_position", [100, 100])

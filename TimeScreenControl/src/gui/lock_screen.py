@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.manager import ConfigManager
 from config.paths import SERVICE_PIPE_NAME
+from service.breaks import get_active_break_remaining
 
 
 class LockScreen:
@@ -162,9 +163,19 @@ class LockScreen:
             bg="#1a1a2e",
         ).pack(pady=(0, 20))
 
+        break_settings = self.cfg.get_break_settings()
+        break_seconds = (
+            get_active_break_remaining(os.environ.get("USERNAME", ""))
+            if break_settings["enabled"] else 0
+        )
+        reason_text = (
+            "Обязательный перерыв. Работа продолжится автоматически после его окончания."
+            if break_seconds > 0
+            else "Использование компьютера запрещено в это время.\nОбратитесь к администратору."
+        )
         tk.Label(
             main_frame,
-            text="Использование компьютера запрещено в это время.\nОбратитесь к администратору.",
+            text=reason_text,
             font=("Arial", 16),
             fg="#ffffff",
             bg="#1a1a2e",
@@ -407,8 +418,15 @@ class LockScreen:
         try:
             cfg = ConfigManager(read_only=True)
             username = os.environ.get("USERNAME", "")
-            if (not cfg.is_enabled() or not cfg.is_controlled_user(username)
-                    or cfg.is_in_grace() or cfg.is_allowed_time()):
+            break_active = (
+                cfg.get_break_settings()["enabled"]
+                and get_active_break_remaining(username) > 0
+            )
+            should_block = cfg.should_block_user(username) or (
+                cfg.is_enabled() and cfg.is_controlled_user(username)
+                and not cfg.is_in_grace() and break_active
+            )
+            if not should_block:
                 self._destroy_all_windows()
                 return
             self.root.lift()

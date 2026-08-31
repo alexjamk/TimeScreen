@@ -115,6 +115,21 @@ class TestConfigManager(TemporaryConfigMixin, unittest.TestCase):
         readonly = ConfigManager(read_only=True)
         self.assertFalse(readonly.set_enabled(True))
 
+    def test_break_settings_are_optional_and_validated(self):
+        self.assertEqual(self.cfg.get_break_settings(), {
+            "enabled": False,
+            "break_minutes": 10,
+            "work_minutes": 60,
+        })
+        self.assertTrue(self.cfg.set_break_settings(True, 10, 60))
+        self.assertEqual(self.cfg.get_break_settings(), {
+            "enabled": True,
+            "break_minutes": 10,
+            "work_minutes": 60,
+        })
+        self.assertFalse(self.cfg.set_break_settings(True, 0, 60))
+        self.assertFalse(self.cfg.set_break_settings(True, 10, 1441))
+
 
 class TestTimeChecking(TemporaryConfigMixin, unittest.TestCase):
     MONDAY = datetime(2026, 8, 24)

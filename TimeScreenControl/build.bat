@@ -136,10 +136,10 @@ echo   - uninstall.bat             (Удаление)
 echo   - README.md                 (Документация)
 echo.
 echo Графический установщик:
-echo   - dist\Installer\TimeScreenControl-Setup-3.0.exe
+echo   - dist\Installer\TimeScreenControl-Setup-3.1.exe
 echo.
 echo Для установки:
-echo   1. Скопируйте TimeScreenControl-Setup-3.0.exe на целевой ПК
+echo   1. Скопируйте TimeScreenControl-Setup-3.1.exe на целевой ПК
 echo   2. Запустите установщик и следуйте указаниям мастера
 echo.
 rmdir /s /q "%PYI_ROOT%" >nul 2>&1

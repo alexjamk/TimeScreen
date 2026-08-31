@@ -150,7 +150,12 @@ class SettingsApp:
         notebook.add(intervals_frame, text="⏰ Временные интервалы")
         self._build_intervals_tab(intervals_frame)
         
-        # Tab 4: Timer Overlay
+        # Tab 4: Mandatory breaks
+        breaks_frame = ttk.Frame(notebook, padding=20)
+        notebook.add(breaks_frame, text="☕ Перерывы")
+        self._build_breaks_tab(breaks_frame)
+
+        # Tab 5: Timer Overlay
         timer_frame = ttk.Frame(notebook, padding=20)
         notebook.add(timer_frame, text="⏱️ Таймер")
         self._build_timer_tab(timer_frame)
@@ -311,6 +316,90 @@ class SettingsApp:
         
         # Load intervals
         self._load_intervals()
+
+    def _build_breaks_tab(self, parent):
+        """Build optional recurring work/break cycle settings."""
+        settings = self.cfg.get_break_settings()
+        ttk.Label(
+            parent,
+            text="Регулярные перерывы",
+            font=("Arial", 16, "bold"),
+        ).pack(pady=(0, 12))
+        ttk.Label(
+            parent,
+            text=(
+                "Считается только фактическое разрешённое время активной выбранной учётной записи.\n"
+                "Сон, выключение, другая учётная запись и время блокировки не засчитываются."
+            ),
+            foreground="blue",
+            justify=tk.CENTER,
+        ).pack(pady=(0, 18))
+
+        settings_frame = ttk.LabelFrame(parent, text="Цикл работы и отдыха", padding=20)
+        settings_frame.pack(fill=tk.X, pady=10)
+        self.break_enabled_var = tk.BooleanVar(value=settings["enabled"])
+        self.work_duration_var = tk.StringVar(value=str(settings["work_minutes"]))
+        self.break_duration_var = tk.StringVar(value=str(settings["break_minutes"]))
+
+        ttk.Checkbutton(
+            settings_frame,
+            text="Включить обязательные перерывы",
+            variable=self.break_enabled_var,
+        ).grid(row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 15))
+
+        ttk.Label(settings_frame, text="Работать").grid(row=1, column=0, sticky=tk.W, pady=6)
+        ttk.Spinbox(
+            settings_frame,
+            from_=1,
+            to=1440,
+            width=8,
+            textvariable=self.work_duration_var,
+        ).grid(row=1, column=1, padx=8, pady=6)
+        ttk.Label(settings_frame, text="минут до перерыва").grid(row=1, column=2, sticky=tk.W, pady=6)
+
+        ttk.Label(settings_frame, text="Перерыв").grid(row=2, column=0, sticky=tk.W, pady=6)
+        ttk.Spinbox(
+            settings_frame,
+            from_=1,
+            to=180,
+            width=8,
+            textvariable=self.break_duration_var,
+        ).grid(row=2, column=1, padx=8, pady=6)
+        ttk.Label(settings_frame, text="минут").grid(row=2, column=2, sticky=tk.W, pady=6)
+
+        ttk.Button(
+            settings_frame,
+            text="💾 Сохранить настройки перерывов",
+            command=self._save_break_settings,
+        ).grid(row=3, column=0, columnspan=3, pady=(18, 4))
+
+        ttk.Label(
+            parent,
+            text=(
+                "Перед перерывом выбранный пользователь увидит уведомления за 10, 5 и 1 минуту.\n"
+                "Изменение параметров или повторное включение начинает новый рабочий цикл."
+            ),
+            justify=tk.CENTER,
+        ).pack(pady=18)
+
+    def _save_break_settings(self):
+        try:
+            work_minutes = int(self.work_duration_var.get())
+            break_minutes = int(self.break_duration_var.get())
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите целое количество минут", parent=self.root)
+            return
+        if self.cfg.set_break_settings(
+            self.break_enabled_var.get(), break_minutes, work_minutes
+        ):
+            self.status_var.set("Настройки перерывов сохранены")
+            self._update_status()
+        else:
+            messagebox.showerror(
+                "Ошибка",
+                self.cfg.last_error or "Не удалось сохранить настройки перерывов",
+                parent=self.root,
+            )
     
     def _build_timer_tab(self, parent):
         """Build timer overlay settings tab."""
@@ -636,10 +725,17 @@ class SettingsApp:
         if hasattr(self, "info_var"):
             controlled_count = len(users)
             intervals_count = len(self.cfg.get_intervals())
+            break_settings = self.cfg.get_break_settings()
+            break_status = (
+                f"{break_settings['break_minutes']} мин. каждые "
+                f"{break_settings['work_minutes']} мин."
+                if break_settings["enabled"] else "Выключены"
+            )
             info_text = f"""
 Статус защиты: {protected}
         Контролируемых пользователей: {controlled_count if controlled_count > 0 else 'НИКТО'}
 Временных интервалов: {intervals_count}
+Регулярные перерывы: {break_status}
 Таймер отображается: {'Да' if self.cfg.show_timer() else 'Нет'}
             """.strip()
             self.info_var.set(info_text)

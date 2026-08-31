@@ -70,6 +70,13 @@ def main():
         elif cmd == "--timer-mode":
             from gui.timer_overlay import run_timer_overlay
             run_timer_overlay()
+        elif cmd == "--break-notification":
+            from gui.break_notification import show_break_notification
+            try:
+                minutes = int(sys.argv[2])
+            except (IndexError, TypeError, ValueError):
+                sys.exit(2)
+            show_break_notification(minutes)
         elif cmd == "--grant-grace":
             from config.manager import ConfigManager
             if not is_windows_admin():
@@ -77,7 +84,7 @@ def main():
                 sys.exit(5)
             sys.exit(0 if ConfigManager(read_only=False).set_grace() else 1)
         elif cmd == "--version":
-            print("TimeScreen Control v3.0")
+            print("TimeScreen Control v3.1")
         elif cmd == "--help":
             print("""
 TimeScreen Control - Parental Control System
@@ -87,6 +94,7 @@ Usage:
   TimeScreenControl.exe --service    # Run as Windows service
   TimeScreenControl.exe --locker-mode # Run lock screen (internal use)
   TimeScreenControl.exe --timer-mode # Run timer overlay (internal use)
+  TimeScreenControl.exe --break-notification N # Show break warning (internal use)
   TimeScreenControl.exe --grant-grace # Start grace period (internal UAC helper)
   TimeScreenControl.exe --version    # Show version
   TimeScreenControl.exe --help       # Show this help
