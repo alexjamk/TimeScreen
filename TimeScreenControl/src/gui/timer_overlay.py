@@ -196,7 +196,7 @@ class TimerOverlay:
 
         Args:
             seconds: Seconds until event, or None
-            event_type: "lock", "unlock", "grace", or "blocked_no_schedule"
+            event_type: schedule/grace event or recurring break event
         """
         if self.label is None:
             return
@@ -214,6 +214,10 @@ class TimerOverlay:
 
         if event_type == "grace":
             self.label.config(text=f"Грейс {minutes:02d}:{secs:02d}", fg="#ffd43b")
+        elif event_type == "break":
+            self.label.config(text=f"Перерыв {minutes:02d}:{secs:02d}", fg="#f6c344")
+        elif event_type == "break_due":
+            self.label.config(text=f"До перерыва {hours:02d}:{minutes:02d}:{secs:02d}", fg="#f6c344")
         elif event_type == "lock":
             self.label.config(text=f"До блокировки {hours:02d}:{minutes:02d}:{secs:02d}", fg="#ff6b6b")
         else:
@@ -237,6 +241,22 @@ class TimerOverlay:
 
         cfg = ConfigManager(read_only=True)
         seconds, event_type = cfg.get_next_event()
+
+        break_settings = cfg.get_break_settings()
+        username = os.environ.get("USERNAME", "")
+        if (break_settings["enabled"] and cfg.is_enabled()
+                and cfg.is_controlled_user(username) and not cfg.is_in_grace()):
+            from service.breaks import get_break_cycle_status
+            break_status = get_break_cycle_status(
+                username,
+                break_settings["work_minutes"],
+                break_settings["break_minutes"],
+            )
+            if break_status.in_break:
+                seconds, event_type = break_status.break_remaining_seconds, "break"
+            elif (cfg.is_allowed_time() and break_status.work_remaining_seconds is not None
+                    and (seconds is None or break_status.work_remaining_seconds < seconds)):
+                seconds, event_type = break_status.work_remaining_seconds, "break_due"
 
         self.update_time(seconds, event_type)
 

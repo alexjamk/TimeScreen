@@ -22,6 +22,7 @@ LOCK_MUTEX_NAME = "Global\\TimeScreenLock"
 
 # PID files. The timer PID is per-user and must not make the shared config writable.
 SERVICE_PID = PROGRAM_DATA / "service.pid"
+BREAK_STATE_PATH = PROGRAM_DATA / "break_state.json"
 LOCAL_APP_DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
 USER_DATA = LOCAL_APP_DATA / "TimeScreen"
 AGENT_PID = USER_DATA / "agent.pid"

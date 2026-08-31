@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.manager import ConfigManager
 from config.paths import INSTALL_DIR, LOG_PATH, SERVICE_PID, SERVICE_PIPE_NAME
+from service.breaks import BreakTracker
 
 
 class ServiceLogger:
@@ -48,11 +49,13 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         self.lock_screens: Dict[int, dict] = {}
         self._pipe_thread: Optional[threading.Thread] = None
         self._failed_unlocks = []
+        self.break_tracker = BreakTracker()
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         win32event.SetEvent(self.stop_event)
         self._terminate_all_lock_screens()
+        self.break_tracker.close()
         try:
             SERVICE_PID.unlink()
         except OSError:
@@ -94,9 +97,30 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         session_id, username = identity
         cfg = ConfigManager(read_only=True)
 
+        break_settings = cfg.get_break_settings()
+        selected_user = cfg.is_enabled() and cfg.is_controlled_user(username)
+        eligible_for_work = (
+            selected_user
+            and break_settings["enabled"]
+            and not cfg.is_in_grace()
+            and cfg.is_allowed_time()
+        )
+        break_status = self.break_tracker.update(
+            username=username,
+            enabled=cfg.is_enabled() and break_settings["enabled"],
+            eligible_for_work=eligible_for_work,
+            work_minutes=break_settings["work_minutes"],
+            break_minutes=break_settings["break_minutes"],
+        )
+        if selected_user:
+            for minutes in break_status.notifications:
+                self._show_break_notification(session_id, minutes)
+
         # Crucial multi-user boundary: only the active session whose username is
         # explicitly selected is enforced; an empty selection controls nobody.
-        should_lock = cfg.should_block_user(username)
+        should_lock = cfg.should_block_user(username) or (
+            selected_user and not cfg.is_in_grace() and break_status.in_break
+        )
         if should_lock:
             self._ensure_lock_screen(session_id, username)
         else:
@@ -136,6 +160,10 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
             self.logger.log(f"Failed to launch lock screen for session {session_id}: {exc}", "ERROR")
 
     def _launch_in_session(self, session_id: int, command, working_dir: Path):
+        process_handle, pid = self._create_process_in_session(session_id, command, working_dir)
+        self.lock_screens[session_id] = {"process": None, "pid": pid, "handle": process_handle}
+
+    def _create_process_in_session(self, session_id: int, command, working_dir: Path):
         import win32api
         import win32con
         import win32process
@@ -154,11 +182,31 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
                 environment, str(working_dir), startup,
             )
             win32api.CloseHandle(thread_handle)
-            self.lock_screens[session_id] = {"process": None, "pid": pid, "handle": process_handle}
+            return process_handle, pid
         finally:
             if environment is not None:
                 win32profile.DestroyEnvironmentBlock(environment)
             win32api.CloseHandle(token)
+
+    def _show_break_notification(self, session_id: int, minutes: int):
+        try:
+            if getattr(sys, "frozen", False):
+                executable = INSTALL_DIR / "TimeScreenControl.exe"
+                if not executable.exists():
+                    raise FileNotFoundError(f"GUI executable not found: {executable}")
+                handle, _pid = self._create_process_in_session(
+                    session_id,
+                    [str(executable), "--break-notification", str(minutes)],
+                    INSTALL_DIR,
+                )
+                import win32api
+                win32api.CloseHandle(handle)
+            else:
+                script = Path(__file__).parent.parent / "gui" / "break_notification.py"
+                subprocess.Popen([sys.executable, str(script), str(minutes)])
+            self.logger.log(f"Break notification shown: {minutes} minute(s), session {session_id}")
+        except Exception as exc:
+            self.logger.log(f"Failed to show break notification: {exc}", "WARNING")
 
     def _is_lock_screen_running(self, session_id: int) -> bool:
         entry = self.lock_screens.get(session_id)

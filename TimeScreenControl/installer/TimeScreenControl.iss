@@ -1,5 +1,5 @@
 #define MyAppName "TimeScreen Control"
-#define MyAppVersion "3.0"
+#define MyAppVersion "3.1"
 #define MyAppPublisher "alexjamk"
 #define MyAppExeName "TimeScreenControl.exe"
 #define ServiceName "TimeScreenControl"

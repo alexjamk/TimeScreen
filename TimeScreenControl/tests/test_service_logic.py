@@ -8,6 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from service.daemon import TimeScreenService
+from service.breaks import BreakStatus
 
 
 class FakeConfig:
@@ -19,6 +20,31 @@ class FakeConfig:
         self.checked_username = username
         return username.casefold() == self.blocked_user.casefold()
 
+    def get_break_settings(self):
+        return {"enabled": True, "break_minutes": 10, "work_minutes": 60}
+
+    def is_enabled(self):
+        return True
+
+    def is_controlled_user(self, username):
+        return username.casefold() == self.blocked_user.casefold()
+
+    def is_in_grace(self):
+        return False
+
+    def is_allowed_time(self):
+        return False
+
+
+class FakeBreakTracker:
+    def __init__(self, status=None):
+        self.status = status or BreakStatus()
+        self.calls = []
+
+    def update(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.status
+
 
 class TestServiceUserScoping(unittest.TestCase):
     def make_service(self, username):
@@ -26,6 +52,10 @@ class TestServiceUserScoping(unittest.TestCase):
         service.lock_screens = {}
         service._clean_finished_processes = lambda: None
         service._get_active_identity = lambda: (7, username)
+        service.break_tracker = FakeBreakTracker()
+        service._show_break_notification = lambda session, minutes: service.actions.append(
+            ("notify", session, minutes)
+        )
         service.actions = []
         service._ensure_lock_screen = lambda session, user: service.actions.append(("lock", session, user))
         service._terminate_lock_screen = lambda session: service.actions.append(("unlock", session))
@@ -41,11 +71,25 @@ class TestServiceUserScoping(unittest.TestCase):
 
     def test_unselected_admin_session_is_not_locked(self):
         service = self.make_service("Administrator")
+        service.break_tracker = FakeBreakTracker(
+            BreakStatus(in_break=True, notifications=[10])
+        )
         config = FakeConfig("Child")
         with patch("service.daemon.ConfigManager", return_value=config):
             service._check_and_enforce()
         self.assertEqual(config.checked_username, "Administrator")
         self.assertEqual(service.actions, [("unlock", 7)])
+
+    def test_break_locks_only_selected_user_and_shows_notifications(self):
+        service = self.make_service("Child")
+        service.break_tracker = FakeBreakTracker(BreakStatus(in_break=True, notifications=[10]))
+        config = FakeConfig("Nobody")
+        config.is_controlled_user = lambda username: username.casefold() == "child"
+        config.should_block_user = lambda username: False
+        config.is_allowed_time = lambda: True
+        with patch("service.daemon.ConfigManager", return_value=config):
+            service._check_and_enforce()
+        self.assertEqual(service.actions, [("notify", 7, 10), ("lock", 7, "Child")])
 
 
 class FakeUnlockConfig:
