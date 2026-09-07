@@ -2,6 +2,12 @@
 
 Система родительского контроля для Windows с защитой от обхода.
 
+## Скачать
+
+[Скачать TimeScreen Control 3.1 для Windows](https://github.com/alexjamk/TimeScreen/releases/download/3.1/TimeScreenControl-Setup-3.1.exe)
+
+SHA-256: `6C0665A2F6608D30283C8596471E0403889D4D44A385F1F35DECCA3911C58956`
+
 ## 📋 Возможности
 
 - **Временные интервалы** - гибкое расписание использования компьютера
@@ -45,7 +51,7 @@ TimeScreenControl/
 
 ## 🚀 Установка
 
-1. Запустите `dist/Installer/TimeScreenControl-Setup-3.1.exe`
+1. [Скачайте установщик TimeScreen Control 3.1](https://github.com/alexjamk/TimeScreen/releases/download/3.1/TimeScreenControl-Setup-3.1.exe)
 2. Подтвердите запрос UAC и следуйте указаниям мастера
 3. Установщик скопирует файлы, зарегистрирует и проверит службу
 4. На последней странице можно сразу запустить настройки
@@ -122,7 +128,7 @@ TimeScreenControl/
 
 ```bash
 cd TimeScreenControl
-python tests/test_config.py
+python -m unittest discover -s tests -v
 ```
 
 ## 📄 Лицензия

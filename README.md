@@ -2,6 +2,12 @@
 
 Программа для ограничения времени использования компьютера. Архитектура: служба Windows (SYSTEM) + GUI-приложение. Экран блокировки и таймер работают без повышения прав; изменение общих настроек требует UAC и пароль TimeScreen.
 
+## Скачать
+
+[Скачать TimeScreen Control 3.1 для Windows](https://github.com/alexjamk/TimeScreen/releases/download/3.1/TimeScreenControl-Setup-3.1.exe)
+
+SHA-256: `6C0665A2F6608D30283C8596471E0403889D4D44A385F1F35DECCA3911C58956`
+
 ## Возможности
 
 - ✅ **Графический интерфейс** — вкладки «Общие», «Пользователи», «Интервалы», «Перерывы», «Таймер»
@@ -86,7 +92,7 @@ build.bat
 
 ### Установка (целевой компьютер)
 
-1. Скопируйте `dist\Installer\TimeScreenControl-Setup-3.1.exe` на целевую машину
+1. [Скачайте установщик TimeScreen Control 3.1](https://github.com/alexjamk/TimeScreen/releases/download/3.1/TimeScreenControl-Setup-3.1.exe)
 2. Запустите установщик и подтвердите UAC
 3. Мастер скопирует файлы, установит и проверит службу
 4. На последней странице оставьте флажок запуска, чтобы сразу открыть настройки
@@ -184,6 +190,7 @@ build.bat
 
 %PROGRAMDATA%\TimeScreen\
 ├── pc_config.json                     — конфиг (пароль, расписание, пользователи)
+├── break_state.json                   — прогресс рабочих циклов по пользователям
 ├── service.pid                        — PID службы
 └── service.log                        — журнал работы
 ```
@@ -208,13 +215,11 @@ build.bat
 
 ```bash
 cd TimeScreenControl
-python tests/test_config.py
+python -m unittest discover -s tests -v
 ```
 
-Три тестовых класса:
-- `TestSecurity` — bcrypt-хэширование и верификация
-- `TestConfigManager` — CRUD-операции с конфигом
-- `TestTimeChecking` — логика проверки времени и интервалов
+Набор тестов проверяет конфигурацию и безопасность, расписания, разграничение
+пользователей в службе, разблокировку по паролю и регулярные перерывы.
 
 ## Решение проблем
 
