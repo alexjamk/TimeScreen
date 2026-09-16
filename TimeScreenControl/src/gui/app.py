@@ -4,7 +4,7 @@ Complete GUI for managing parental control settings.
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import sys
 import os
 import subprocess
@@ -15,7 +15,8 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.manager import ConfigManager
-from config.paths import AGENT_PID
+from config.paths import AGENT_PID, LOCK_BACKGROUND_PATH
+from gui.lock_background import install_background
 from gui.dialogs import PasswordDialog, SetPasswordDialog, ConfirmDialog
 from gui.components.user_selector import UserSelector
 from gui.components.interval_editor import IntervalEditor
@@ -226,6 +227,14 @@ class SettingsApp:
             text="🔑 Изменить пароль",
             command=self._change_password
         ).pack(side=tk.LEFT, padx=5)
+
+        background_frame = ttk.LabelFrame(parent, text="Фон экрана блокировки", padding=15)
+        background_frame.pack(fill=tk.X, pady=10)
+        self.background_status = tk.StringVar()
+        ttk.Label(background_frame, textvariable=self.background_status).pack(anchor=tk.W)
+        ttk.Button(background_frame, text="Выбрать изображение…", command=self._choose_lock_background).pack(side=tk.LEFT, padx=5, pady=8)
+        ttk.Button(background_frame, text="Вернуть обычный фон", command=self._clear_lock_background).pack(side=tk.LEFT, padx=5, pady=8)
+        self._update_background_status()
         
         # Info section
         info_box = ttk.LabelFrame(parent, text="ℹ️ Информация", padding=15)
@@ -233,6 +242,35 @@ class SettingsApp:
         
         self.info_var = tk.StringVar()
         ttk.Label(info_box, textvariable=self.info_var, justify=tk.LEFT).pack(anchor=tk.W)
+
+    def _update_background_status(self):
+        self.background_status.set(
+            "Установлено своё изображение" if LOCK_BACKGROUND_PATH.is_file()
+            else "Стандартный однотонный фон"
+        )
+
+    def _choose_lock_background(self):
+        selected = filedialog.askopenfilename(
+            parent=self.root,
+            title="Выберите фон экрана блокировки",
+            filetypes=[("Изображения", "*.jpg *.jpeg *.png *.webp *.bmp"), ("Все файлы", "*.*")],
+        )
+        if not selected:
+            return
+        try:
+            install_background(Path(selected))
+            self._update_background_status()
+            self.status_var.set("Фон экрана блокировки обновлён")
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Не удалось установить фон", str(exc), parent=self.root)
+
+    def _clear_lock_background(self):
+        try:
+            LOCK_BACKGROUND_PATH.unlink(missing_ok=True)
+            self._update_background_status()
+            self.status_var.set("Восстановлен стандартный фон")
+        except OSError as exc:
+            messagebox.showerror("Не удалось удалить фон", str(exc), parent=self.root)
     
     def _build_users_tab(self, parent):
         """Build users management tab."""
@@ -737,6 +775,7 @@ class SettingsApp:
 Временных интервалов: {intervals_count}
 Регулярные перерывы: {break_status}
 Таймер отображается: {'Да' if self.cfg.show_timer() else 'Нет'}
+Разработчик: Alex — k-alex.ru
             """.strip()
             self.info_var.set(info_text)
     

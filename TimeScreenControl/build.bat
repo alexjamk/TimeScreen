@@ -1,5 +1,4 @@
 @echo off
-chcp 1251 >nul
 setlocal enabledelayedexpansion
 
 REM Use unique staging paths so stale/locked PyInstaller artifacts cannot break a build
@@ -10,14 +9,14 @@ set "PYI_SPEC=%PYI_ROOT%\spec"
 mkdir "%PYI_WORK%" "%PYI_DIST%" "%PYI_SPEC%" >nul 2>&1
 
 echo ============================================
-echo   TimeScreen Control - Сборка
+echo   TimeScreen Control - Build
 echo ============================================
 echo.
 
 REM Check if PyInstaller is installed
 python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
-    echo Установка PyInstaller...
+    echo Installing PyInstaller...
     python -m pip install pyinstaller
 )
 
@@ -28,7 +27,7 @@ REM --------------------------------------------------
 REM [1/2] Build GUI EXE (onefile, windowed, with icon)
 REM --------------------------------------------------
 echo.
-echo [1/2] Сборка GUI (TimeScreenControl.exe)...
+echo [1/2] Building GUI (TimeScreenControl.exe)...
 python -m PyInstaller --noconfirm --clean ^
     --workpath "%PYI_WORK%" ^
     --distpath "%PYI_DIST%" ^
@@ -48,17 +47,16 @@ python -m PyInstaller --noconfirm --clean ^
     "%CD%\src\main.py"
 
 if errorlevel 1 (
-    echo [ERROR] Ошибка сборки GUI!
-    pause
+    echo [ERROR] GUI build failed!
     exit /b 1
 )
-echo [OK] GUI собран
+echo [OK] GUI built
 
 REM --------------------------------------------------
 REM [2/2] Build Service EXE (onedir - REQUIRED for SCM)
 REM --------------------------------------------------
 echo.
-echo [2/2] Сборка службы (TimeScreenService)...
+echo [2/2] Building service (TimeScreenService)...
 python -m PyInstaller --noconfirm --clean ^
     --workpath "%PYI_WORK%" ^
     --distpath "%PYI_DIST%" ^
@@ -86,17 +84,16 @@ python -m PyInstaller --noconfirm --clean ^
     "%CD%\src\service_entry.py"
 
 if errorlevel 1 (
-    echo [ERROR] Ошибка сборки службы!
-    pause
+    echo [ERROR] Service build failed!
     exit /b 1
 )
-echo [OK] Служба собрана
+echo [OK] Service built
 
 REM --------------------------------------------------
 REM Prepare Release package
 REM --------------------------------------------------
 echo.
-echo Подготовка пакета для распространения...
+echo Preparing release package...
 
 if exist "dist\Release" goto RELEASE_READY
 mkdir "dist\Release" >nul 2>&1
@@ -117,35 +114,34 @@ copy "README.md" "dist\Release\" >nul
 REM Build standard graphical Setup.exe
 call "installer\build_installer.bat"
 if errorlevel 1 (
-    echo [ERROR] Не удалось собрать графический установщик
+    echo [ERROR] Installer build failed
     exit /b 1
 )
 
-echo [OK] Пакет готов
+echo [OK] Release package ready
 
 echo.
 echo ============================================
-echo   Сборка завершена!
+echo   Build complete!
 echo ============================================
 echo.
-echo Состав пакета (dist\Release\):
+echo Release package (dist\Release\):
 echo   - TimeScreenControl.exe     (GUI, onefile)
-echo   - TimeScreenService\        (Служба, onedir)
-echo   - install.bat               (Установка)
-echo   - uninstall.bat             (Удаление)
-echo   - README.md                 (Документация)
+echo   - TimeScreenService\        (service, onedir)
+echo   - install.bat               (install)
+echo   - uninstall.bat             (uninstall)
+echo   - README.md                 (documentation)
 echo.
-echo Графический установщик:
-echo   - dist\Installer\TimeScreenControl-Setup-3.1.exe
+echo Graphical installer:
+echo   - dist\Installer\TimeScreenControl-Setup-3.2.exe
 echo.
-echo Для установки:
-echo   1. Скопируйте TimeScreenControl-Setup-3.1.exe на целевой ПК
-echo   2. Запустите установщик и следуйте указаниям мастера
+echo Installation:
+echo   1. Copy TimeScreenControl-Setup-3.2.exe to the target PC
+echo   2. Run setup and follow the wizard
 echo.
 rmdir /s /q "%PYI_ROOT%" >nul 2>&1
-pause
 exit /b 0
 
 :RELEASE_ERROR
-echo [ERROR] Не удалось подготовить dist\Release
+echo [ERROR] Could not prepare dist\Release
 exit /b 1

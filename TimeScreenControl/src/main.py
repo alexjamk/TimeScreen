@@ -84,7 +84,7 @@ def main():
                 sys.exit(5)
             sys.exit(0 if ConfigManager(read_only=False).set_grace() else 1)
         elif cmd == "--version":
-            print("TimeScreen Control v3.1")
+            print("TimeScreen Control v3.2")
         elif cmd == "--help":
             print("""
 TimeScreen Control - Parental Control System

@@ -1,6 +1,6 @@
 #define MyAppName "TimeScreen Control"
-#define MyAppVersion "3.1"
-#define MyAppPublisher "alexjamk"
+#define MyAppVersion "3.2"
+#define MyAppPublisher "Alex"
 #define MyAppExeName "TimeScreenControl.exe"
 #define ServiceName "TimeScreenControl"
 #define ReleaseDir "..\dist\Release"
@@ -10,6 +10,9 @@ AppId={{D149E496-1361-4BB1-A508-CF485F08BBE2}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL=https://k-alex.ru
+AppSupportURL=https://k-alex.ru
+AppUpdatesURL=https://github.com/alexjamk/TimeScreen/releases
 DefaultDirName={autopf}\TimeScreenControl
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

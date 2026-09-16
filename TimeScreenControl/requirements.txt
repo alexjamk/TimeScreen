@@ -2,6 +2,7 @@
 
 # Password hashing (strong security)
 bcrypt>=4.0.0
+Pillow>=10.0.0
 
 # Windows service support (optional, for production)
 pywin32>=305; sys_platform == 'win32'

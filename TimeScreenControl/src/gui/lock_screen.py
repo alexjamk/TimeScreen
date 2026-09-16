@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.manager import ConfigManager
 from config.paths import SERVICE_PIPE_NAME
 from service.breaks import get_active_break_remaining
+from gui.lock_background import background_photo
 
 
 class LockScreen:
@@ -37,6 +38,7 @@ class LockScreen:
         self.root = tk.Tk()
         self.cfg = ConfigManager(read_only=True)
         self.secondary_windows = []
+        self.background_images = []
         self._setup_window()
         self._build_ui()
         self.root.after(1000, self._periodic_safety_check)
@@ -53,9 +55,11 @@ class LockScreen:
             primary = monitors[0]
             x, y, right, bottom = primary
             self.root.geometry(f"{right - x}x{bottom - y}+{x}+{y}")
+            self._place_background(self.root, right - x, bottom - y)
             self._create_secondary_blockers(monitors[1:])
         except Exception:
             self.root.attributes("-fullscreen", True)
+            self._place_background(self.root, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
 
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
         self.root.bind("<Alt-F4>", lambda e: "break")
@@ -126,6 +130,7 @@ class LockScreen:
             window.attributes("-topmost", True)
             window.configure(bg="#1a1a2e")
             window.geometry(f"{right - x}x{bottom - y}+{x}+{y}")
+            self._place_background(window, right - x, bottom - y)
             window.protocol("WM_DELETE_WINDOW", lambda: None)
             window.bind("<Alt-F4>", lambda e: "break")
             window.bind("<Escape>", lambda e: "break")
@@ -149,6 +154,12 @@ class LockScreen:
             ).pack()
 
             self.secondary_windows.append(window)
+
+    def _place_background(self, window, width, height):
+        photo = background_photo(window, width, height)
+        if photo is not None:
+            self.background_images.append(photo)
+            tk.Label(window, image=photo, borderwidth=0).place(x=0, y=0, relwidth=1, relheight=1)
 
     def _build_ui(self):
         """Build the lock screen UI."""
