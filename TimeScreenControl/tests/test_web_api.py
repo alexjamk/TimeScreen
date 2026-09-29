@@ -52,9 +52,9 @@ class TestWebApi(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.terminate(); cls.server.wait(timeout=5); cls.temp.cleanup()
 
-    def call(self, action, payload=None, headers=None, cookie=None):
+    def call(self, action, payload=None, headers=None, cookie=None, query=""):
         data = None if payload is None else json.dumps(payload).encode()
-        request = urllib.request.Request(self.base + "/api.php?action=" + action, data=data, method="GET" if payload is None else "POST", headers={"Content-Type":"application/json", **(headers or {})})
+        request = urllib.request.Request(self.base + "/api.php?action=" + action + query, data=data, method="GET" if payload is None else "POST", headers={"Content-Type":"application/json", **(headers or {})})
         if cookie: request.add_header("Cookie", cookie)
         with urllib.request.urlopen(request, timeout=3) as response:
             return json.loads(response.read()), response.headers
@@ -86,11 +86,37 @@ class TestWebApi(unittest.TestCase):
         self.call("device-config", {"device_id":device_id,"config":config}, {"X-CSRF-Token":csrf}, cookie)
         child_status=[{"name":"Child","controlled":True,"state":"blocked","seconds":600,"next_event":"unlock"}]
         remote,_=self.call("device-sync", {"known_revision":1,"local_dirty":False,"config":dict(config,enabled=True),"available_users":["Child"],"user_statuses":child_status}, auth); self.assertFalse(remote["config"]["enabled"])
-        self.call("grant-time", {"device_id":device_id,"username":"Child","minutes":30}, {"X-CSRF-Token":csrf}, cookie)
+        granted,_=self.call("grant-time", {"device_id":device_id,"username":"Child","minutes":30}, {"X-CSRF-Token":csrf}, cookie)
+        pending,_=self.call("command-status", None, cookie=cookie, query=f"&id={granted['command_id']}")
+        self.assertEqual(pending["status"], "pending")
         command,_=self.call("device-sync", {"known_revision":remote["revision"],"local_dirty":False,"config":config,"available_users":["Child"],"user_statuses":child_status}, auth)
         self.assertEqual(command["commands"][0]["payload"]["minutes"],30)
         self.assertEqual(command["commands"][0]["payload"]["username"],"Child")
+        delivered,_=self.call("command-status", None, cookie=cookie, query=f"&id={granted['command_id']}")
+        self.assertEqual(delivered["status"], "delivered")
         self.call("device-ack", {"command_ids":[command["commands"][0]["id"]]}, auth)
+        done,_=self.call("command-status", None, cookie=cookie, query=f"&id={granted['command_id']}")
+        self.assertEqual(done["status"], "done")
+
+        member_email=f"member-{uuid.uuid4()}@example.test"; member_password="another7"
+        self.call("register", {"email":member_email,"password":member_password})
+        member_verify_url=self.mail_log.read_text(encoding="utf-8").splitlines()[-1].split("\t",1)[1]
+        with urllib.request.urlopen(member_verify_url, timeout=3) as response: self.assertIn("Email подтверждён", response.read().decode())
+        member_login,member_headers=self.call("login", {"email":member_email,"password":member_password})
+        member_cookie=member_headers.get("Set-Cookie").split(";",1)[0]; member_csrf=member_login["csrf"]
+        shared,_=self.call("device-share", {"device_id":device_id,"email":member_email}, {"X-CSRF-Token":csrf}, cookie)
+        self.assertEqual(len(shared["members"]),2)
+        member_devices,_=self.call("devices", None, cookie=member_cookie)
+        self.assertEqual(member_devices["devices"][0]["access_role"],"member")
+        self.assertEqual(len(member_devices["devices"][0]["members"]),2)
+        shared_config=dict(config,enabled=True)
+        self.call("device-config", {"device_id":device_id,"config":shared_config}, {"X-CSRF-Token":member_csrf}, member_cookie)
+        member_grant,_=self.call("grant-time", {"device_id":device_id,"username":"Child","minutes":10}, {"X-CSRF-Token":member_csrf}, member_cookie)
+        self.assertGreater(member_grant["command_id"],granted["command_id"])
+        left,_=self.call("leave-device", {"device_id":device_id}, {"X-CSRF-Token":member_csrf}, member_cookie)
+        self.assertTrue(left["ok"])
+        member_devices,_=self.call("devices", None, cookie=member_cookie)
+        self.assertEqual(member_devices["devices"],[])
         for index, code in enumerate(("234567", "345678"), start=2):
             extra_id=str(uuid.uuid4()); extra_token=(str(index)*43); extra_auth={"Authorization":f"Bearer {extra_id}.{extra_token}"}
             self.call("device-register", {"device_id":extra_id,"token":extra_token,"name":f"PC {index}","platform":"Windows"})

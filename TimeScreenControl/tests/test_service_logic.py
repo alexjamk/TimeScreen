@@ -35,6 +35,9 @@ class FakeConfig:
     def is_allowed_time(self, username=None):
         return False
 
+    def show_timer(self):
+        return True
+
 
 class FakeBreakTracker:
     def __init__(self, status=None):
@@ -51,6 +54,7 @@ class TestServiceUserScoping(unittest.TestCase):
         service = TimeScreenService.__new__(TimeScreenService)
         service.lock_screens = {}
         service._clean_finished_processes = lambda: None
+        service._clean_finished_timer_agents = lambda: None
         service._get_active_identity = lambda: (7, username)
         service.break_tracker = FakeBreakTracker()
         service._show_break_notification = lambda session, minutes: service.actions.append(
@@ -59,6 +63,8 @@ class TestServiceUserScoping(unittest.TestCase):
         service.actions = []
         service._ensure_lock_screen = lambda session, user: service.actions.append(("lock", session, user))
         service._terminate_lock_screen = lambda session: service.actions.append(("unlock", session))
+        service._ensure_timer_agent = lambda session, user: service.actions.append(("timer", session, user))
+        service._terminate_timer_agent = lambda session: service.actions.append(("timer-stop", session))
         return service
 
     def test_selected_child_session_is_locked(self):
@@ -67,7 +73,7 @@ class TestServiceUserScoping(unittest.TestCase):
         with patch("service.daemon.ConfigManager", return_value=config):
             service._check_and_enforce()
         self.assertEqual(config.checked_username, "Child")
-        self.assertEqual(service.actions, [("lock", 7, "Child")])
+        self.assertEqual(service.actions, [("timer", 7, "Child"), ("lock", 7, "Child")])
 
     def test_unselected_admin_session_is_not_locked(self):
         service = self.make_service("Administrator")
@@ -78,7 +84,7 @@ class TestServiceUserScoping(unittest.TestCase):
         with patch("service.daemon.ConfigManager", return_value=config):
             service._check_and_enforce()
         self.assertEqual(config.checked_username, "Administrator")
-        self.assertEqual(service.actions, [("unlock", 7)])
+        self.assertEqual(service.actions, [("timer-stop", 7), ("unlock", 7)])
 
     def test_break_locks_only_selected_user_and_shows_notifications(self):
         service = self.make_service("Child")
@@ -89,7 +95,7 @@ class TestServiceUserScoping(unittest.TestCase):
         config.is_allowed_time = lambda username=None: True
         with patch("service.daemon.ConfigManager", return_value=config):
             service._check_and_enforce()
-        self.assertEqual(service.actions, [("notify", 7, 10), ("lock", 7, "Child")])
+        self.assertEqual(service.actions, [("notify", 7, 10), ("timer", 7, "Child"), ("lock", 7, "Child")])
 
 
 class FakeUnlockConfig:

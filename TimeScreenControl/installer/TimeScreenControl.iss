@@ -1,5 +1,5 @@
 #define MyAppName "TimeScreen Control"
-#define MyAppVersion "3.8"
+#define MyAppVersion "3.9"
 #define MyAppPublisher "Alex"
 #define MyAppExeName "TimeScreenControl.exe"
 #define ServiceName "TimeScreenControl"
@@ -58,7 +58,9 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "TimeScreenTimer"; ValueData: """{app}\{#MyAppExeName}"" --timer-mode"; Flags: uninsdeletevalue
+; Since 3.9 the service starts the timer only in the active controlled user's
+; session. Remove the legacy global logon entry during install and upgrade.
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "TimeScreenTimer"; Flags: deletevalue uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent

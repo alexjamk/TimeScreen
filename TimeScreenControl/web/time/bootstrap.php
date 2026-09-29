@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 const SESSION_COOKIE = 'timescreen_session';
 const MAX_JSON_BODY_BYTES = 65536;
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 function security_headers(): void {
     header('X-Content-Type-Options: nosniff');
@@ -98,8 +98,16 @@ CREATE TABLE IF NOT EXISTS devices (
  user_statuses_json TEXT NOT NULL DEFAULT '[]',
  last_seen_at INTEGER, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS device_shares (
+ device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ granted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+ created_at INTEGER NOT NULL,
+ PRIMARY KEY(device_id,user_id)
+);
 CREATE INDEX IF NOT EXISTS idx_devices_pairing ON devices(pairing_hash, pairing_expires);
 CREATE INDEX IF NOT EXISTS idx_devices_owner ON devices(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_device_shares_user ON device_shares(user_id);
 CREATE TABLE IF NOT EXISTS commands (
  id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
  type TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
@@ -212,6 +220,23 @@ function current_user(bool $csrf=false): array {
 }
 function set_session_cookie(string $token): void { setcookie(SESSION_COOKIE,$token,['expires'=>time()+2592000,'path'=>'/','secure'=>true,'httponly'=>true,'samesite'=>'Strict']); }
 
+function accessible_device(string $deviceId,int $userId,bool $ownerOnly=false): array|false {
+    if($ownerOnly){
+        $stmt=db()->prepare("SELECT d.*,'owner' AS access_role FROM devices d WHERE d.id=? AND d.owner_user_id=?");
+        $stmt->execute([$deviceId,$userId]);
+    } else {
+        $stmt=db()->prepare("SELECT DISTINCT d.*,CASE WHEN d.owner_user_id=? THEN 'owner' ELSE 'member' END AS access_role FROM devices d LEFT JOIN device_shares s ON s.device_id=d.id AND s.user_id=? WHERE d.id=? AND d.owner_user_id IS NOT NULL AND (d.owner_user_id=? OR s.user_id=?)");
+        $stmt->execute([$userId,$userId,$deviceId,$userId,$userId]);
+    }
+    return $stmt->fetch();
+}
+
+function device_members(string $deviceId): array {
+    $stmt=db()->prepare("SELECT u.id,u.email,'owner' AS role FROM devices d JOIN users u ON u.id=d.owner_user_id WHERE d.id=? UNION ALL SELECT u.id,u.email,'member' AS role FROM device_shares s JOIN users u ON u.id=s.user_id WHERE s.device_id=? ORDER BY role DESC,email");
+    $stmt->execute([$deviceId,$deviceId]);
+    return $stmt->fetchAll();
+}
+
 function validate_settings(mixed $value): array {
     if(!is_array($value)) error_response('Некорректные настройки');
     $allowed=['enabled','intervals','controlled_users','show_timer','break_enabled','break_duration_minutes','work_duration_minutes'];
@@ -255,4 +280,17 @@ function send_verification_mail(string $email, string $url): bool {
     $envelope=preg_match('/<([^<>\r\n]+)>/',$from,$matches)?$matches[1]:$from;
     if(!filter_var($envelope,FILTER_VALIDATE_EMAIL)) return false;
     return mail($email,$subject,$body,$headers,'-f'.$envelope);
+}
+
+function send_share_mail(string $email,string $deviceName,string $ownerEmail): bool {
+    if ((cfg()['mail_transport'] ?? 'mail') === 'log') {
+        return file_put_contents((string)cfg()['mail_log'], $email."\tDEVICE-SHARE\t".$deviceName."\n", FILE_APPEND | LOCK_EX) !== false;
+    }
+    $subject='=?UTF-8?B?'.base64_encode('Вам открыт доступ к TimeScreen').'?=';
+    $url=(string)cfg()['base_url'];
+    $body="Пользователь $ownerEmail открыл вам доступ к компьютеру «$deviceName» в TimeScreen.\n\nОткройте кабинет: $url\n";
+    $from=(string)cfg()['mail_from'];
+    $headers=implode("\r\n",['From: '.$from,'MIME-Version: 1.0','Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: 8bit']);
+    $envelope=preg_match('/<([^<>\r\n]+)>/',$from,$matches)?$matches[1]:$from;
+    return filter_var($envelope,FILTER_VALIDATE_EMAIL) ? mail($email,$subject,$body,$headers,'-f'.$envelope) : false;
 }

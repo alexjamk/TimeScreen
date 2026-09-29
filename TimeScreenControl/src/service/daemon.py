@@ -48,6 +48,7 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
         self.logger = ServiceLogger(LOG_PATH)
         self.lock_screens: Dict[int, dict] = {}
+        self.timer_agents: Dict[int, dict] = {}
         self._pipe_thread: Optional[threading.Thread] = None
         self._failed_unlocks = []
         self.break_tracker = BreakTracker()
@@ -58,6 +59,7 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         win32event.SetEvent(self.stop_event)
         self._terminate_all_lock_screens()
+        self._terminate_all_timer_agents()
         self.break_tracker.close()
         try:
             SERVICE_PID.unlink()
@@ -93,6 +95,7 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
             if result == win32event.WAIT_OBJECT_0:
                 break
         self._terminate_all_lock_screens()
+        self._terminate_all_timer_agents()
 
     def _remote_sync_loop(self):
         """Poll remote settings independently so network delays never block enforcement."""
@@ -106,6 +109,7 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
 
     def _check_and_enforce(self):
         self._clean_finished_processes()
+        self._clean_finished_timer_agents()
         identity = self._get_active_identity()
         if identity is None:
             return
@@ -130,6 +134,13 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         if selected_user:
             for minutes in break_status.notifications:
                 self._show_break_notification(session_id, minutes)
+
+        # The service owns timer lifecycle so a remotely enabled timer appears
+        # without opening the settings application first.
+        if selected_user and cfg.show_timer():
+            self._ensure_timer_agent(session_id, username)
+        else:
+            self._terminate_timer_agent(session_id)
 
         # Crucial multi-user boundary: only the active session whose username is
         # explicitly selected is enforced; an empty selection controls nobody.
@@ -223,13 +234,71 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         except Exception as exc:
             self.logger.log(f"Failed to show break notification: {exc}", "WARNING")
 
+    def _ensure_timer_agent(self, session_id: int, username: str):
+        entry=self.timer_agents.get(session_id)
+        if entry and self._is_process_entry_running(entry):
+            return
+        if entry:
+            self._close_timer_entry(session_id,terminate=False)
+        try:
+            if getattr(sys,"frozen",False):
+                executable=INSTALL_DIR / "TimeScreenControl.exe"
+                if not executable.exists():
+                    raise FileNotFoundError(f"GUI executable not found: {executable}")
+                handle,pid=self._create_process_in_session(session_id,[str(executable),"--timer-mode"],INSTALL_DIR)
+                self.timer_agents[session_id]={"process":None,"pid":pid,"handle":handle}
+            else:
+                script=Path(__file__).parent.parent / "gui" / "timer_overlay.py"
+                process=subprocess.Popen([sys.executable,str(script)])
+                self.timer_agents[session_id]={"process":process,"pid":process.pid,"handle":None}
+            self.logger.log(f"Timer launched for {username}, session {session_id}")
+        except Exception as exc:
+            self.logger.log(f"Failed to launch timer for session {session_id}: {exc}","WARNING")
+
+    @staticmethod
+    def _is_process_entry_running(entry: dict) -> bool:
+        if entry["process"] is not None:
+            return entry["process"].poll() is None
+        return win32event.WaitForSingleObject(entry["handle"],0)==win32event.WAIT_TIMEOUT
+
+    def _clean_finished_timer_agents(self):
+        for session_id in list(self.timer_agents):
+            if not self._is_process_entry_running(self.timer_agents[session_id]):
+                self._close_timer_entry(session_id,terminate=False)
+
+    def _terminate_timer_agent(self,session_id: int):
+        if session_id in self.timer_agents:
+            self._close_timer_entry(session_id,terminate=True)
+            self.logger.log(f"Timer stopped for session {session_id}")
+
+    def _close_timer_entry(self,session_id: int,terminate: bool):
+        entry=self.timer_agents.pop(session_id,None)
+        if not entry:
+            return
+        if entry["process"] is not None:
+            if terminate and entry["process"].poll() is None:
+                entry["process"].terminate()
+            return
+        import win32api
+        import win32process
+        try:
+            if terminate and win32event.WaitForSingleObject(entry["handle"],0)==win32event.WAIT_TIMEOUT:
+                win32process.TerminateProcess(entry["handle"],0)
+        finally:
+            win32api.CloseHandle(entry["handle"])
+
+    def _terminate_all_timer_agents(self):
+        for session_id in list(self.timer_agents):
+            try:
+                self._close_timer_entry(session_id,terminate=True)
+            except Exception as exc:
+                self.logger.log(f"Failed to terminate timer in session {session_id}: {exc}","WARNING")
+
     def _is_lock_screen_running(self, session_id: int) -> bool:
         entry = self.lock_screens.get(session_id)
         if not entry:
             return False
-        if entry["process"] is not None:
-            return entry["process"].poll() is None
-        return win32event.WaitForSingleObject(entry["handle"], 0) == win32event.WAIT_TIMEOUT
+        return self._is_process_entry_running(entry)
 
     def _clean_finished_processes(self):
         for session_id in list(self.lock_screens):

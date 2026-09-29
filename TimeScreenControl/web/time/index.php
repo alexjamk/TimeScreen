@@ -1,8 +1,8 @@
 <?php
 header('Content-Type: text/html; charset=utf-8');
 ?><!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#172554"><meta name="robots" content="noindex,nofollow"><link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="app.css"><title>TimeScreen Family</title></head>
-<body><header><div><strong>TimeScreen</strong><span>Family для ПК</span></div><button id="logout" class="ghost hidden">Выйти</button></header>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#172554"><meta name="robots" content="noindex,nofollow"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon-192.png" sizes="192x192"><link rel="apple-touch-icon" href="icon-192.png"><link rel="stylesheet" href="app.css"><title>TimeScreen Family</title></head>
+<body><header><div class="brand"><img src="icon.svg" alt=""><div><strong>TimeScreen</strong><span>Family для ПК</span></div></div><div class="header-actions"><button id="install-app" class="ghost hidden">Установить</button><button id="logout" class="ghost hidden">Выйти</button></div></header>
 <main>
  <section id="auth" class="auth-shell">
   <form id="auth-form" class="card auth-card">
@@ -20,11 +20,12 @@ header('Content-Type: text/html; charset=utf-8');
 </main>
 <footer>TimeScreen Control · Alex · <a href="https://k-alex.ru">k-alex.ru</a> · <a href="https://k-alex.ru/legal/">Политика конфиденциальности</a></footer>
 <dialog id="pair-dialog"><form method="dialog" class="card"><button class="close" value="cancel">×</button><h2>Связать компьютер</h2><p>Откройте на ПК «Настройки → Связывание» и введите текущий шестизначный код.</p><label>Код<input id="pair-code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" placeholder="000000"></label><button id="pair-submit" type="button">Связать</button></form></dialog>
-<dialog id="device-dialog"><form id="device-form" method="dialog" class="card wide"><button class="close" value="cancel">×</button><h2 id="device-title"></h2><input id="device-id" type="hidden"><div id="online"></div>
+<dialog id="device-dialog"><form id="device-form" method="dialog" class="card wide"><button class="close" value="cancel" aria-label="Закрыть">×</button><div class="device-heading"><div><h2 id="device-title"></h2><div id="online"></div></div><span id="access-role" class="role-badge"></span></div><input id="device-id" type="hidden">
  <fieldset><legend>Защита</legend><label class="check"><input id="enabled" type="checkbox"> Включена</label><label class="check"><input id="show-timer" type="checkbox"> Показывать таймер</label></fieldset>
  <fieldset><legend>Контролируемые пользователи</legend><div id="users"></div></fieldset>
  <fieldset><legend>Разрешённые интервалы</legend><div id="intervals"></div><button id="add-interval" type="button" class="secondary">Добавить интервал</button></fieldset>
  <fieldset><legend>Регулярные перерывы</legend><label class="check"><input id="break-enabled" type="checkbox"> Включить</label><div class="row"><label>Работа, минут<input id="work-minutes" type="number" min="1" max="1440"></label><label>Перерыв, минут<input id="break-minutes" type="number" min="1" max="180"></label></div></fieldset>
- <div class="actions"><button type="submit">Сохранить</button><button id="unlink" type="button" class="danger">Отвязать</button></div>
+ <fieldset><legend>Доступ к устройству</legend><div id="members" class="members"></div><div id="share-controls"><p class="field-help">Второй родитель должен зарегистрироваться и подтвердить email.</p><div class="share-row"><label>Email<input id="share-email" type="email" autocomplete="email" placeholder="parent@example.com"></label><button id="share-device" type="button" class="secondary">Поделиться</button></div></div></fieldset>
+ <div class="actions"><button type="submit">Сохранить</button><button id="unlink" type="button" class="danger">Отвязать устройство</button></div>
  </form></dialog>
 <div id="toast" role="status"></div><script src="app.js" defer></script></body></html>

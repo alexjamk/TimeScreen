@@ -101,26 +101,68 @@ try {
     }
 
     if($action==='devices' && $method==='GET'){
-        $user=current_user(); $stmt=db()->prepare('SELECT id,name,platform,last_seen_at,config_json,config_revision,available_users_json,user_statuses_json FROM devices WHERE owner_user_id=? ORDER BY name'); $stmt->execute([$user['id']]);
-        $items=[]; foreach($stmt as $row){$row['config']=$row['config_json']?json_decode($row['config_json'],true):null; $row['available_users']=json_decode($row['available_users_json'],true)?:[]; $row['user_statuses']=json_decode($row['user_statuses_json'],true)?:[]; unset($row['config_json'],$row['available_users_json'],$row['user_statuses_json']); $items[]=$row;}
+        $user=current_user(); $stmt=db()->prepare("SELECT DISTINCT d.id,d.name,d.platform,d.last_seen_at,d.config_json,d.config_revision,d.available_users_json,d.user_statuses_json,CASE WHEN d.owner_user_id=? THEN 'owner' ELSE 'member' END AS access_role FROM devices d LEFT JOIN device_shares s ON s.device_id=d.id AND s.user_id=? WHERE d.owner_user_id IS NOT NULL AND (d.owner_user_id=? OR s.user_id=?) ORDER BY d.name"); $stmt->execute([$user['id'],$user['id'],$user['id'],$user['id']]);
+        $items=[]; foreach($stmt as $row){$row['config']=$row['config_json']?json_decode($row['config_json'],true):null; $row['available_users']=json_decode($row['available_users_json'],true)?:[]; $row['user_statuses']=json_decode($row['user_statuses_json'],true)?:[]; $row['members']=device_members($row['id']); unset($row['config_json'],$row['available_users_json'],$row['user_statuses_json']); $items[]=$row;}
         json_response(['ok'=>true,'devices'=>$items,'server_time'=>time()]);
     }
 
     if($action==='device-config' && $method==='POST'){
         $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??''); $settings=validate_settings($data['config']??null);
-        $stmt=db()->prepare('UPDATE devices SET config_json=?,config_revision=config_revision+1,config_updated_at=? WHERE id=? AND owner_user_id=?'); $stmt->execute([json_encode($settings,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),time(),$id,$user['id']]);
+        if(!accessible_device($id,(int)$user['id'])) error_response('Устройство не найдено',404);
+        $stmt=db()->prepare('UPDATE devices SET config_json=?,config_revision=config_revision+1,config_updated_at=? WHERE id=?'); $stmt->execute([json_encode($settings,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),time(),$id]);
         if($stmt->rowCount()!==1) error_response('Устройство не найдено',404); audit((int)$user['id'],$id,'config-update'); json_response(['ok'=>true]);
     }
 
     if($action==='grant-time' && $method==='POST'){
         $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??''); $username=text_limit(trim((string)($data['username']??'')),128); $minutes=filter_var($data['minutes']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>1,'max_range'=>180]]); if($minutes===false) error_response('Допустимо от 1 до 180 минут');
-        $stmt=db()->prepare('SELECT available_users_json FROM devices WHERE id=? AND owner_user_id=?'); $stmt->execute([$id,$user['id']]); $device=$stmt->fetch(); if(!$device) error_response('Устройство не найдено',404);
+        $device=accessible_device($id,(int)$user['id']); if(!$device) error_response('Устройство не найдено',404);
         $available=json_decode($device['available_users_json'],true)?:[]; if(!$username||!in_array($username,$available,true)) error_response('Пользователь не найден на устройстве',404);
-        $now=time(); db()->prepare('INSERT INTO commands(device_id,type,payload_json,created_at,expires_at) VALUES(?,?,?,?,?)')->execute([$id,'grant-time',json_encode(['minutes'=>$minutes,'username'=>$username],JSON_UNESCAPED_UNICODE),$now,$now+3600]); audit((int)$user['id'],$id,'grant-time'); json_response(['ok'=>true]);
+        $now=time(); $command=db()->prepare('INSERT INTO commands(device_id,type,payload_json,created_at,expires_at) VALUES(?,?,?,?,?)'); $command->execute([$id,'grant-time',json_encode(['minutes'=>$minutes,'username'=>$username],JSON_UNESCAPED_UNICODE),$now,$now+3600]);
+        $lastInsert=db()->prepare('SELECT last_insert_rowid()'); $lastInsert->execute(); $commandId=(int)$lastInsert->fetchColumn();
+        audit((int)$user['id'],$id,'grant-time'); json_response(['ok'=>true,'command_id'=>$commandId]);
+    }
+
+    if($action==='command-status' && $method==='GET'){
+        $user=current_user(); $id=filter_var($_GET['id']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>1]]); if($id===false) error_response('Команда не найдена',404);
+        $stmt=db()->prepare('SELECT c.device_id,c.status,c.expires_at FROM commands c WHERE c.id=?'); $stmt->execute([$id]); $command=$stmt->fetch();
+        if(!$command||!accessible_device($command['device_id'],(int)$user['id'])) error_response('Команда не найдена',404);
+        $status=((int)($command['expires_at']??0)>0&&(int)$command['expires_at']<time()&&$command['status']!=='done')?'expired':$command['status'];
+        json_response(['ok'=>true,'status'=>$status]);
+    }
+
+    if($action==='device-share' && $method==='POST'){
+        $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??''); $email=text_lower(trim((string)($data['email']??'')));
+        $device=accessible_device($id,(int)$user['id'],true); if(!$device) error_response('Только владелец может открыть доступ',403);
+        if(!filter_var($email,FILTER_VALIDATE_EMAIL)||strlen($email)>254) error_response('Некорректный email');
+        rate_limit('share-user',(string)$user['id'],10,3600);
+        $targetStmt=db()->prepare('SELECT id,email FROM users WHERE email=? AND verified_at IS NOT NULL'); $targetStmt->execute([$email]); $target=$targetStmt->fetch();
+        if(!$target) error_response('Пользователь должен сначала зарегистрироваться и подтвердить email',404);
+        if((int)$target['id']===(int)$user['id']) error_response('Вы уже владелец устройства');
+        $count=db()->prepare('SELECT COUNT(*) FROM device_shares WHERE device_id=?'); $count->execute([$id]); if((int)$count->fetchColumn()>=5) error_response('Можно добавить не более пяти пользователей',409);
+        $share=db()->prepare('INSERT INTO device_shares(device_id,user_id,granted_by,created_at) VALUES(?,?,?,?) ON CONFLICT(device_id,user_id) DO NOTHING'); $share->execute([$id,$target['id'],$user['id'],time()]);
+        if($share->rowCount()!==1) error_response('У этого пользователя уже есть доступ',409);
+        $mailSent=send_share_mail($target['email'],$device['name'],$user['email']); audit((int)$user['id'],$id,'device-share');
+        json_response(['ok'=>true,'mail_sent'=>$mailSent,'members'=>device_members($id)]);
+    }
+
+    if($action==='device-unshare' && $method==='POST'){
+        $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??''); $target=filter_var($data['user_id']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>1]]);
+        if(!accessible_device($id,(int)$user['id'],true)) error_response('Только владелец может закрыть доступ',403);
+        if($target===false) error_response('Пользователь не найден',404);
+        $stmt=db()->prepare('DELETE FROM device_shares WHERE device_id=? AND user_id=?'); $stmt->execute([$id,$target]); if($stmt->rowCount()!==1) error_response('Пользователь не найден',404);
+        audit((int)$user['id'],$id,'device-unshare'); json_response(['ok'=>true,'members'=>device_members($id)]);
+    }
+
+    if($action==='leave-device' && $method==='POST'){
+        $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??'');
+        $stmt=db()->prepare('DELETE FROM device_shares WHERE device_id=? AND user_id=?'); $stmt->execute([$id,$user['id']]); if($stmt->rowCount()!==1) error_response('Совместный доступ не найден',404);
+        audit((int)$user['id'],$id,'leave-device'); json_response(['ok'=>true]);
     }
 
     if($action==='unlink' && $method==='POST'){
         $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??'');
+        if(!accessible_device($id,(int)$user['id'],true)) error_response('Устройство не найдено',404);
+        db()->prepare('DELETE FROM device_shares WHERE device_id=?')->execute([$id]);
         $stmt=db()->prepare('UPDATE devices SET owner_user_id=NULL,config_json=NULL,config_revision=0,pairing_hash=NULL,pairing_expires=NULL WHERE id=? AND owner_user_id=?'); $stmt->execute([$id,$user['id']]); if($stmt->rowCount()!==1) error_response('Устройство не найдено',404); audit((int)$user['id'],$id,'unlink'); json_response(['ok'=>true]);
     }
 

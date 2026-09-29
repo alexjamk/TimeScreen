@@ -87,9 +87,8 @@ class SettingsApp:
         
         self._build_ui()
         
-        # Start timer overlay if enabled
-        if self.cfg.show_timer() and self.cfg.is_enabled():
-            self.root.after(500, self._start_timer_process)
+        # The Windows service owns the persistent timer lifecycle. This also
+        # makes remotely enabled timers appear without opening settings.
     
     def _center_window(self):
         """Center window on screen."""
@@ -661,15 +660,13 @@ class SettingsApp:
             self.status_var.set(f"Защита {status}")
             self._update_status()
             
-            # Update timer overlay
+            # The service notices the signed configuration change within five seconds.
             if new_state and self.cfg.show_timer():
                 self.cfg.set_show_timer(True)
-                self._start_timer_process()
             elif not new_state:
                 if self.timer_overlay:
                     self.timer_overlay.destroy()
                     self.timer_overlay = None
-                self._stop_timer_process()
         else:
             messagebox.showerror("Ошибка", "Не удалось изменить состояние защиты", parent=self.root)
             self.enabled_var.set(not new_state)
@@ -774,13 +771,10 @@ class SettingsApp:
         show = self.show_timer_var.get()
         
         if self.cfg.set_show_timer(show):
-            if show:
-                self._start_timer_process()
-            else:
+            if not show:
                 if self.timer_overlay:
                     self.timer_overlay.destroy()
                     self.timer_overlay = None
-                self._stop_timer_process()
             self._update_status()
         else:
             messagebox.showerror("Ошибка", "Не удалось изменить настройку", parent=self.root)
