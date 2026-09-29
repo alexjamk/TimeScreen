@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 import sys
@@ -40,6 +41,27 @@ class TestRemoteSync(unittest.TestCase):
             self.remote._settings_hash({"enabled": True, "intervals": []}),
             self.remote._settings_hash({"intervals": [], "enabled": True}),
         )
+
+    def test_saved_device_credentials_are_not_world_readable(self):
+        with patch.object(self.remote, "register"):
+            self.remote.enable("Домашний ПК")
+
+        if os.name == "nt":
+            import win32security
+
+            descriptor = win32security.GetNamedSecurityInfo(
+                str(self.path),
+                win32security.SE_FILE_OBJECT,
+                win32security.DACL_SECURITY_INFORMATION,
+            )
+            dacl = descriptor.GetSecurityDescriptorDacl()
+            trustees = {
+                win32security.ConvertSidToStringSid(dacl.GetAce(index)[2])
+                for index in range(dacl.GetAceCount())
+            }
+            self.assertEqual(trustees, {"S-1-5-18", "S-1-5-32-544"})
+        else:
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import os
 import platform
 import secrets
 import socket
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -30,8 +31,28 @@ class RemoteSync:
         self.lock_path = REMOTE_LOCK_PATH if state_path == REMOTE_STATE_PATH else state_path.with_suffix(".lock")
         self.api_url = api_url
 
+    @staticmethod
+    def _protect_secret_file(path: Path) -> None:
+        """Allow only SYSTEM and administrators to read device credentials."""
+        if os.name != "nt":
+            path.chmod(0o600)
+            return
+        result = subprocess.run(
+            [
+                "icacls.exe", str(path), "/inheritance:r", "/grant:r",
+                "*S-1-5-18:F", "*S-1-5-32-544:F",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            raise OSError("Не удалось защитить учётные данные удалённого управления")
+
     def _load(self) -> dict:
         try:
+            if self.state_path.exists():
+                self._protect_secret_file(self.state_path)
             state = json.loads(self.state_path.read_text(encoding="utf-8"))
             return state if isinstance(state, dict) else {}
         except (OSError, ValueError, TypeError):
@@ -41,6 +62,7 @@ class RemoteSync:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(prefix="remote_state.", suffix=".tmp", dir=str(self.state_path.parent))
         try:
+            self._protect_secret_file(Path(name))
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(state, stream, ensure_ascii=False, indent=2)
                 stream.flush(); os.fsync(stream.fileno())

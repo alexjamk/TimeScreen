@@ -1,5 +1,5 @@
 #define MyAppName "TimeScreen Control"
-#define MyAppVersion "3.5"
+#define MyAppVersion "3.6"
 #define MyAppPublisher "Alex"
 #define MyAppExeName "TimeScreenControl.exe"
 #define ServiceName "TimeScreenControl"
@@ -63,6 +63,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [UninstallRun]
 Filename: "{sys}\sc.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "StopTimeScreenService"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM TimeScreenService.exe"; Flags: runhidden waituntilterminated; RunOnceId: "KillTimeScreenService"
 Filename: "{sys}\sc.exe"; Parameters: "delete {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteTimeScreenService"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM TimeScreenControl.exe"; Flags: runhidden waituntilterminated; RunOnceId: "StopTimeScreenGui"
 
@@ -178,6 +179,20 @@ begin
     end;
     Sleep(500);
   end;
+
+  { Older builds can remain in STOP_PENDING despite acknowledging stop. }
+  RunHidden(ExpandConstant('{sys}\taskkill.exe'), '/F /IM TimeScreenService.exe', ResultCode);
+  RunHidden(ExpandConstant('{sys}\sc.exe'), 'delete {#ServiceName}', ResultCode);
+  for Attempt := 1 to 10 do
+  begin
+    if (not IsServiceInstalled) and (not IsServiceRegistryPresent) then
+    begin
+      Sleep(500);
+      Result := True;
+      Exit;
+    end;
+    Sleep(500);
+  end;
 end;
 
 function InstallServiceWithRetry: Boolean;
@@ -232,6 +247,13 @@ begin
     ExpandConstant('{sys}\icacls.exe'),
     FileAclParams,
     'Не удалось защитить существующие файлы конфигурации');
+
+  if FileExists(ConfigDir + '\remote_state.json') then
+    RunRequired(
+      ExpandConstant('{sys}\icacls.exe'),
+      '"' + ConfigDir + '\remote_state.json" /inheritance:r /grant:r ' +
+        '*S-1-5-18:F *S-1-5-32-544:F /C',
+      'Не удалось защитить токен удалённого управления');
 
   AclParams := '"' + ConfigDir + '" /inheritance:r /grant:r ' +
     '*S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX /C';
