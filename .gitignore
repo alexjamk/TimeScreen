@@ -22,3 +22,7 @@ Thumbs.db
 
 # Release metadata
 release_body.json
+
+# TimeScreen web runtime secrets/data
+TimeScreenControl/web/time/private/config.php
+TimeScreenControl/web/time/private/*.sqlite*

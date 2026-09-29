@@ -21,6 +21,7 @@ from gui.dialogs import PasswordDialog, SetPasswordDialog, ConfirmDialog
 from gui.components.user_selector import UserSelector
 from gui.components.interval_editor import IntervalEditor
 from gui.timer_overlay import TimerOverlay
+from service.remote import RemoteSync
 
 
 class SettingsApp:
@@ -160,6 +161,10 @@ class SettingsApp:
         timer_frame = ttk.Frame(notebook, padding=20)
         notebook.add(timer_frame, text="⏱️ Таймер")
         self._build_timer_tab(timer_frame)
+
+        remote_frame = ttk.Frame(notebook, padding=20)
+        notebook.add(remote_frame, text="🌐 Связывание")
+        self._build_remote_tab(remote_frame)
         
         # Status bar
         self.status_var = tk.StringVar(value="Готово")
@@ -354,6 +359,53 @@ class SettingsApp:
         
         # Load intervals
         self._load_intervals()
+
+    def _build_remote_tab(self, parent):
+        self.remote = RemoteSync()
+        ttk.Label(parent, text="Удалённое управление", font=("Arial", 16, "bold")).pack(pady=(0, 12))
+        ttk.Label(parent, text="Свяжите этот компьютер с кабинетом https://time.k-alex.ru\nПароль TimeScreen на сайт не передаётся.", justify=tk.CENTER, foreground="blue").pack(pady=(0, 18))
+        box = ttk.LabelFrame(parent, text="Это устройство", padding=20); box.pack(fill=tk.X)
+        self.remote_name_var = tk.StringVar()
+        self.remote_code_var = tk.StringVar()
+        self.remote_status_var = tk.StringVar()
+        ttk.Label(box, text="Название").pack(anchor=tk.W)
+        ttk.Entry(box, textvariable=self.remote_name_var).pack(fill=tk.X, pady=(4, 12))
+        ttk.Label(box, textvariable=self.remote_code_var, font=("Consolas", 32, "bold"), foreground="#1d4ed8").pack(pady=8)
+        ttk.Label(box, textvariable=self.remote_status_var, justify=tk.CENTER).pack(pady=8)
+        buttons = ttk.Frame(box); buttons.pack(pady=10)
+        ttk.Button(buttons, text="Включить и получить код", command=self._enable_remote).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons, text="Отключить синхронизацию", command=self._disable_remote).pack(side=tk.LEFT, padx=5)
+        self._refresh_remote_status()
+
+    def _enable_remote(self):
+        try:
+            self.remote.enable(self.remote_name_var.get().strip() or os.environ.get("COMPUTERNAME", "Компьютер"))
+            self.status_var.set("Удалённое управление включено")
+        except Exception as exc:
+            messagebox.showerror("Ошибка подключения", str(exc), parent=self.root)
+
+    def _disable_remote(self):
+        self.remote.disable(); self.status_var.set("Удалённая синхронизация отключена")
+
+    def _refresh_remote_status(self):
+        try:
+            exists = self.root.winfo_exists()
+        except tk.TclError:
+            return
+        if not exists:
+            return
+        status = self.remote.status()
+        if not self.remote_name_var.get():
+            self.remote_name_var.set(status["device_name"])
+        if status["enabled"]:
+            self.remote_code_var.set(status.get("code", "------"))
+            state = "Устройство связано" if status["paired"] else "Введите код в веб-приложении"
+            error = f"\nПоследняя ошибка: {status['last_error']}" if status.get("last_error") else ""
+            self.remote_status_var.set(f"{state}. Код обновится через {status.get('seconds_remaining', 0)} сек.{error}")
+        else:
+            self.remote_code_var.set("------")
+            self.remote_status_var.set("Удалённое управление выключено")
+        self.root.after(1000, self._refresh_remote_status)
 
     def _build_breaks_tab(self, parent):
         """Build optional recurring work/break cycle settings."""

@@ -350,6 +350,34 @@ class ConfigManager:
             work_duration_minutes=work_value,
         ) is None)
 
+    def export_remote_settings(self) -> Dict[str, Any]:
+        """Return only settings that may be synchronized with the web account."""
+        keys = (
+            "enabled", "intervals", "controlled_users", "show_timer",
+            "break_enabled", "break_duration_minutes", "work_duration_minutes",
+        )
+        return {key: deepcopy(self.config.get(key, self.DEFAULT_CONFIG[key])) for key in keys}
+
+    def apply_remote_settings(self, settings: Dict[str, Any]) -> bool:
+        """Validate and atomically apply the remotely controllable subset."""
+        if not isinstance(settings, dict):
+            self.last_error = "Некорректные удалённые настройки"
+            return False
+        allowed = set(self.export_remote_settings())
+        if set(settings) != allowed:
+            self.last_error = "Удалённый ответ содержит недопустимые поля"
+            return False
+
+        def change(data: dict) -> bool:
+            candidate = deepcopy(data)
+            candidate.update(deepcopy(settings))
+            if not self._validate_config(candidate):
+                self.last_error = "Удалённые настройки не прошли проверку"
+                return False
+            data.update(deepcopy(settings))
+            return True
+        return self._mutate(change)
+
     def get_timer_position(self) -> Tuple[int, int]:
         pos = self.config.get("timer_position", [100, 100])
         return int(pos[0]), int(pos[1])
@@ -358,7 +386,28 @@ class ConfigManager:
         return self._mutate(lambda data: data.update(timer_position=[int(x), int(y)]) is None)
 
     def set_grace(self) -> bool:
-        until = datetime.datetime.now() + datetime.timedelta(minutes=self.GRACE_MINUTES)
+        return self.set_grace_minutes(self.GRACE_MINUTES)
+
+    def set_grace_minutes(self, minutes: int) -> bool:
+        try:
+            value = int(minutes)
+        except (TypeError, ValueError):
+            self.last_error = "Некорректная продолжительность"
+            return False
+        if not 1 <= value <= 180:
+            self.last_error = "Можно добавить от 1 до 180 минут"
+            return False
+        now = datetime.datetime.now()
+        base = now
+        existing = self.config.get("grace_until")
+        if existing:
+            try:
+                current_until = datetime.datetime.fromisoformat(existing)
+                if current_until > now:
+                    base = current_until
+            except (TypeError, ValueError):
+                pass
+        until = base + datetime.timedelta(minutes=value)
         return self._mutate(lambda data: data.update(grace_until=until.isoformat()) is None)
 
     def get_grace_remaining_seconds(self, now: Optional[datetime.datetime] = None) -> Optional[int]:

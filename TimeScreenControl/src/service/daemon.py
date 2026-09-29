@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.manager import ConfigManager
 from config.paths import INSTALL_DIR, LOG_PATH, SERVICE_PID, SERVICE_PIPE_NAME
 from service.breaks import BreakTracker
+from service.remote import RemoteSync
 
 
 class ServiceLogger:
@@ -50,6 +51,8 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         self._pipe_thread: Optional[threading.Thread] = None
         self._failed_unlocks = []
         self.break_tracker = BreakTracker()
+        self.remote_sync = RemoteSync()
+        self._remote_thread: Optional[threading.Thread] = None
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
@@ -78,6 +81,8 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
 
         self._pipe_thread = threading.Thread(target=self._serve_unlock_requests, daemon=True)
         self._pipe_thread.start()
+        self._remote_thread = threading.Thread(target=self._remote_sync_loop, daemon=True)
+        self._remote_thread.start()
 
         while True:
             try:
@@ -88,6 +93,16 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
             if result == win32event.WAIT_OBJECT_0:
                 break
         self._terminate_all_lock_screens()
+
+    def _remote_sync_loop(self):
+        """Poll remote settings independently so network delays never block enforcement."""
+        while win32event.WaitForSingleObject(self.stop_event, 0) != win32event.WAIT_OBJECT_0:
+            try:
+                self.remote_sync.sync_once()
+            except Exception as exc:
+                self.logger.log(f"Remote sync failed: {exc}", "WARNING")
+            if win32event.WaitForSingleObject(self.stop_event, 20000) == win32event.WAIT_OBJECT_0:
+                return
 
     def _check_and_enforce(self):
         self._clean_finished_processes()

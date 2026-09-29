@@ -94,6 +94,31 @@ class TestConfigManager(TemporaryConfigMixin, unittest.TestCase):
         self.assertTrue(reloaded.verify_password("new-password"))
         self.assertEqual(reloaded.get_timer_position(), (200, 300))
 
+    def test_remote_settings_cannot_change_password_or_grace(self):
+        self.assertTrue(self.cfg.set_password("local-only-password"))
+        settings = self.cfg.export_remote_settings()
+        settings.update(enabled=True, controlled_users=["Child"])
+        self.assertTrue(self.cfg.apply_remote_settings(settings))
+        reloaded = ConfigManager(read_only=True)
+        self.assertTrue(reloaded.verify_password("local-only-password"))
+        malicious = dict(settings, password_hash="attacker")
+        self.assertFalse(self.cfg.apply_remote_settings(malicious))
+
+    def test_variable_grace_period_is_bounded(self):
+        self.assertFalse(self.cfg.set_grace_minutes(0))
+        self.assertFalse(self.cfg.set_grace_minutes(181))
+        self.assertTrue(self.cfg.set_grace_minutes(30))
+        remaining = self.cfg.get_grace_remaining_seconds()
+        self.assertIsNotNone(remaining)
+        self.assertGreater(remaining, 29 * 60)
+
+    def test_remote_grants_extend_existing_grace(self):
+        self.assertTrue(self.cfg.set_grace_minutes(10))
+        first = datetime.fromisoformat(self.cfg.config["grace_until"])
+        self.assertTrue(self.cfg.set_grace_minutes(30))
+        second = datetime.fromisoformat(self.cfg.config["grace_until"])
+        self.assertAlmostEqual((second - first).total_seconds(), 30 * 60, delta=2)
+
     def test_malformed_config_fails_closed(self):
         self.assertTrue(self.cfg.set_enabled(True))
         manager_module.CONFIG_PATH.write_text("{broken", encoding="utf-8")
