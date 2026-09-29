@@ -18,10 +18,24 @@ try {
         if($passwordLength<7||$passwordLength>256) error_response('Пароль должен содержать не менее 7 символов');
         $verify=random_token(); $db=db();
         try{$db->prepare('INSERT INTO users(email,password_hash,verify_hash,verify_expires,created_at) VALUES(?,?,?,?,?)')->execute([$email,password_hash($password,PASSWORD_DEFAULT),token_hash($verify),time()+86400,time()]);}
-        catch(Throwable $e){error_response('Аккаунт уже существует или ожидает подтверждения',409);}
+        catch(Throwable $e){error_response('Аккаунт уже существует. Если email не подтверждён, отправьте письмо повторно.',409);}
         $url=cfg()['base_url'].'/verify.php?token='.rawurlencode($verify);
         if(!send_verification_mail($email,$url)){$db->prepare('DELETE FROM users WHERE email=? AND verified_at IS NULL')->execute([$email]); error_response('Не удалось отправить письмо. Повторите позже.',503);}
         audit(null,null,'register'); json_response(['ok'=>true,'message'=>'Письмо для подтверждения отправлено'],201);
+    }
+
+    if($action==='resend-verification' && $method==='POST'){
+        $data=json_input(); $email=text_lower(trim((string)($data['email']??'')));
+        rate_limit('resend-verification',($_SERVER['REMOTE_ADDR']??'').'|'.$email,3,3600);
+        if(!filter_var($email,FILTER_VALIDATE_EMAIL)||strlen($email)>254) error_response('Некорректный email');
+        $stmt=db()->prepare('SELECT id FROM users WHERE email=? AND verified_at IS NULL'); $stmt->execute([$email]); $user=$stmt->fetch();
+        if($user){
+            $verify=random_token(); $url=cfg()['base_url'].'/verify.php?token='.rawurlencode($verify);
+            if(!send_verification_mail($email,$url)) error_response('Не удалось отправить письмо. Повторите позже.',503);
+            db()->prepare('UPDATE users SET verify_hash=?,verify_expires=? WHERE id=?')->execute([token_hash($verify),time()+86400,$user['id']]);
+            audit((int)$user['id'],null,'resend-verification');
+        }
+        json_response(['ok'=>true,'message'=>'Если адрес ожидает подтверждения, новое письмо отправлено']);
     }
 
     if($action==='login' && $method==='POST'){

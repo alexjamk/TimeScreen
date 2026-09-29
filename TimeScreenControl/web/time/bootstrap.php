@@ -177,7 +177,11 @@ function send_verification_mail(string $email, string $url): bool {
     if ((cfg()['mail_transport'] ?? 'mail') === 'log') {
         return file_put_contents((string)cfg()['mail_log'], $email . "\t" . $url . "\n", FILE_APPEND | LOCK_EX) !== false;
     }
-    $subject='Подтверждение регистрации TimeScreen';
+    $subject='=?UTF-8?B?'.base64_encode('Подтверждение регистрации TimeScreen').'?=';
     $body="Подтвердите регистрацию TimeScreen:\n$url\n\nСсылка действует 24 часа.";
-    return mail($email,$subject,$body,implode("\r\n",['From: '.cfg()['mail_from'],'Content-Type: text/plain; charset=UTF-8']));
+    $from=(string)cfg()['mail_from'];
+    $headers=implode("\r\n",['From: '.$from,'MIME-Version: 1.0','Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: 8bit']);
+    $envelope=preg_match('/<([^<>\r\n]+)>/',$from,$matches)?$matches[1]:$from;
+    if(!filter_var($envelope,FILTER_VALIDATE_EMAIL)) return false;
+    return mail($email,$subject,$body,$headers,'-f'.$envelope);
 }

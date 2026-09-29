@@ -66,6 +66,7 @@ class TestWebApi(unittest.TestCase):
         weak.exception.close()
         email = f"parent-{uuid.uuid4()}@example.test"; password = "seven77"
         created, _ = self.call("register", {"email":email,"password":password}); self.assertTrue(created["ok"])
+        resent, _ = self.call("resend-verification", {"email":email}); self.assertTrue(resent["ok"])
         verify_url = self.mail_log.read_text(encoding="utf-8").splitlines()[-1].split("\t",1)[1]
         with urllib.request.urlopen(verify_url, timeout=3) as response: self.assertIn("Email подтверждён", response.read().decode())
         logged, headers = self.call("login", {"email":email,"password":password}); csrf=logged["csrf"]

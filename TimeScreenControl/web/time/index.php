@@ -10,7 +10,7 @@ header('Content-Type: text/html; charset=utf-8');
    <h1 id="auth-title">Вход</h1><p id="auth-hint">Сессия сохранится на этом устройстве на 30 дней.</p>
    <label>Email<input name="email" type="email" autocomplete="email" required></label>
    <label><span id="password-label">Пароль</span><input id="auth-password" name="password" type="password" autocomplete="current-password" required></label>
-   <button id="auth-submit">Войти</button>
+   <div class="auth-actions"><button id="auth-submit">Войти</button><button id="resend-verification" type="button" class="secondary hidden">Отправить письмо повторно</button></div>
   </form>
  </section>
  <section id="dashboard" class="hidden">
