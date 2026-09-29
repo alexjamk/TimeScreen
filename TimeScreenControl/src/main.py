@@ -16,6 +16,8 @@ import ctypes
 import subprocess
 from pathlib import Path
 
+from app_info import APP_VERSION
+
 def get_base_path():
     """Get base path for both development and PyInstaller bundle"""
     if getattr(sys, 'frozen', False):
@@ -84,7 +86,7 @@ def main():
                 sys.exit(5)
             sys.exit(0 if ConfigManager(read_only=False).set_grace() else 1)
         elif cmd == "--version":
-            print("TimeScreen Control v3.3")
+            print(f"TimeScreen Control v{APP_VERSION}")
         elif cmd == "--help":
             print("""
 TimeScreen Control - Parental Control System

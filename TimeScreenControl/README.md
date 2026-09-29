@@ -1,10 +1,10 @@
-# TimeScreen Control v3.3
+# TimeScreen Control v3.4
 
 Система родительского контроля для Windows с защитой от обхода.
 
 ## Скачать
 
-[Скачать TimeScreen Control 3.3 для Windows](https://github.com/alexjamk/TimeScreen/releases/download/3.3/TimeScreenControl-Setup-3.3.exe)
+[Скачать TimeScreen Control 3.4 для Windows](https://github.com/alexjamk/TimeScreen/releases/download/3.4/TimeScreenControl-Setup-3.4.exe)
 
 Контрольная сумма SHA-256 опубликована на странице релиза.
 
@@ -20,6 +20,7 @@
 - **Регулярные перерывы** - перерыв N минут после M минут фактической разрешённой работы
 - **Целостность конфигурации** - ACL, HMAC-SHA256 и fail-closed загрузка
 - **Удалённое управление** - PWA на [time.k-alex.ru](https://time.k-alex.ru/) с подтверждением email и меняющимся кодом связывания
+- **О программе и обновления** - автор, сайт, ссылка на GitHub и автоматическая проверка новой версии
 
 ## 🏗️ Архитектура
 
@@ -53,7 +54,7 @@ TimeScreenControl/
 
 ## 🚀 Установка
 
-1. [Скачайте установщик TimeScreen Control 3.3](https://github.com/alexjamk/TimeScreen/releases/download/3.3/TimeScreenControl-Setup-3.3.exe)
+1. [Скачайте установщик TimeScreen Control 3.4](https://github.com/alexjamk/TimeScreen/releases/download/3.4/TimeScreenControl-Setup-3.4.exe)
 2. Подтвердите запрос UAC и следуйте указаниям мастера
 3. Установщик скопирует файлы, зарегистрирует и проверит службу
 4. На последней странице можно сразу запустить настройки
@@ -83,6 +84,7 @@ TimeScreenControl/
 4. **Перерывы** - опциональная блокировка на N минут после M минут работы
 5. **Таймер** - настройки отображения таймера
 6. **Связывание** - код подключения к веб-кабинету, который обновляется каждую минуту
+7. **О программе** - версия, информация об авторе и безопасная проверка обновлений через GitHub
 
 ### Удалённое управление
 

@@ -18,6 +18,7 @@ from typing import Callable, Iterator
 
 from config.manager import ConfigManager
 from config.paths import REMOTE_LOCK_PATH, REMOTE_STATE_PATH
+from app_info import APP_VERSION
 
 
 DEFAULT_API_URL = "https://time.k-alex.ru/api.php"
@@ -109,7 +110,7 @@ class RemoteSync:
         return hashlib.sha256(raw).hexdigest()
 
     def _request(self, action: str, payload: dict, state: dict, authenticated: bool = True) -> dict:
-        headers = {"Content-Type": "application/json", "User-Agent": "TimeScreenControl/3.3"}
+        headers = {"Content-Type": "application/json", "User-Agent": f"TimeScreenControl/{APP_VERSION}"}
         if authenticated:
             headers["Authorization"] = f"Bearer {state['device_id']}.{state['device_token']}"
         request = urllib.request.Request(

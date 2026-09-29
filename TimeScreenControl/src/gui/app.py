@@ -8,6 +8,9 @@ from tkinter import ttk, messagebox, filedialog
 import sys
 import os
 import subprocess
+import queue
+import threading
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +25,8 @@ from gui.components.user_selector import UserSelector
 from gui.components.interval_editor import IntervalEditor
 from gui.timer_overlay import TimerOverlay
 from service.remote import RemoteSync
+from app_info import APP_NAME, APP_VERSION, AUTHOR, RELEASES_URL, WEBSITE_URL
+from utils.update_checker import fetch_latest_release
 
 
 class SettingsApp:
@@ -56,6 +61,9 @@ class SettingsApp:
         # Initialize config
         self.cfg = ConfigManager(read_only=False)
         self.timer_overlay: Optional[TimerOverlay] = None
+        self._update_queue = queue.Queue()
+        self._update_check_running = False
+        self._latest_release_url = RELEASES_URL
         if self.cfg.config.get("_tampered"):
             messagebox.showerror(
                 "Конфигурация повреждена",
@@ -165,6 +173,10 @@ class SettingsApp:
         remote_frame = ttk.Frame(notebook, padding=20)
         notebook.add(remote_frame, text="🌐 Связывание")
         self._build_remote_tab(remote_frame)
+
+        about_frame = ttk.Frame(notebook, padding=20)
+        notebook.add(about_frame, text="ℹ️ О программе")
+        self._build_about_tab(about_frame)
         
         # Status bar
         self.status_var = tk.StringVar(value="Готово")
@@ -178,6 +190,80 @@ class SettingsApp:
         
         # Update status
         self._update_status()
+        self.root.after(1500, self._start_update_check)
+
+    def _build_about_tab(self, parent):
+        ttk.Label(parent, text=APP_NAME, font=("Arial", 20, "bold")).pack(pady=(15, 6))
+        ttk.Label(parent, text=f"Версия {APP_VERSION}", font=("Arial", 12)).pack(pady=(0, 20))
+
+        details = ttk.LabelFrame(parent, text="Информация", padding=20)
+        details.pack(fill=tk.X, pady=10)
+        ttk.Label(details, text=f"Разработчик: {AUTHOR}", font=("Arial", 11, "bold")).pack(anchor=tk.W, pady=4)
+        site = ttk.Label(details, text=WEBSITE_URL, foreground="#1d4ed8", cursor="hand2")
+        site.pack(anchor=tk.W, pady=4)
+        site.bind("<Button-1>", lambda _event: webbrowser.open(WEBSITE_URL, new=2))
+        ttk.Label(
+            details,
+            text="Родительский контроль для Windows с локальными и удалёнными настройками.",
+            wraplength=650,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(10, 0))
+
+        updates = ttk.LabelFrame(parent, text="Обновления", padding=20)
+        updates.pack(fill=tk.X, pady=10)
+        self.about_update_var = tk.StringVar(value="Проверка обновлений будет выполнена автоматически")
+        ttk.Label(updates, textvariable=self.about_update_var, wraplength=650, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 12))
+        buttons = ttk.Frame(updates)
+        buttons.pack(anchor=tk.W)
+        ttk.Button(buttons, text="Проверить обновления", command=lambda: self._start_update_check(manual=True)).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(buttons, text="Открыть релизы GitHub", command=self._open_releases).pack(side=tk.LEFT)
+
+        ttk.Label(
+            updates,
+            text="Установка обновления запускается пользователем и требует подтверждения UAC.",
+            foreground="#64748b",
+        ).pack(anchor=tk.W, pady=(14, 0))
+
+    def _open_releases(self):
+        webbrowser.open(self._latest_release_url, new=2)
+
+    def _start_update_check(self, manual=False):
+        if self._update_check_running:
+            return
+        self._update_check_running = True
+        self.about_update_var.set("Проверяем последнюю версию…")
+
+        def worker():
+            try:
+                self._update_queue.put(("ok", fetch_latest_release(), manual))
+            except Exception as exc:
+                self._update_queue.put(("error", str(exc), manual))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(100, self._poll_update_result)
+
+    def _poll_update_result(self):
+        try:
+            state, value, manual = self._update_queue.get_nowait()
+        except queue.Empty:
+            try:
+                self.root.after(100, self._poll_update_result)
+            except tk.TclError:
+                pass
+            return
+        self._update_check_running = False
+        if state == "error":
+            self.about_update_var.set("Не удалось проверить обновления. Откройте страницу релизов вручную.")
+            if manual:
+                messagebox.showwarning("Проверка обновлений", str(value), parent=self.root)
+            return
+        release = value
+        self._latest_release_url = release.page_url
+        if release.is_newer:
+            self.about_update_var.set(f"Доступна новая версия {release.version}. Откройте релиз для скачивания установщика.")
+            self.status_var.set(f"Доступна новая версия TimeScreen Control {release.version}")
+        else:
+            self.about_update_var.set(f"Установлена актуальная версия {APP_VERSION}.")
     
     def _build_general_tab(self, parent):
         """Build general settings tab."""
