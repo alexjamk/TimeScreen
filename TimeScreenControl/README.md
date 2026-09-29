@@ -1,10 +1,10 @@
-# TimeScreen Control v3.4
+# TimeScreen Control v3.5
 
 Система родительского контроля для Windows с защитой от обхода.
 
 ## Скачать
 
-[Скачать TimeScreen Control 3.4 для Windows](https://github.com/alexjamk/TimeScreen/releases/download/3.4/TimeScreenControl-Setup-3.4.exe)
+[Скачать TimeScreen Control 3.5 для Windows](https://github.com/alexjamk/TimeScreen/releases/download/3.5/TimeScreenControl-Setup-3.5.exe)
 
 Контрольная сумма SHA-256 опубликована на странице релиза.
 
@@ -54,7 +54,7 @@ TimeScreenControl/
 
 ## 🚀 Установка
 
-1. [Скачайте установщик TimeScreen Control 3.4](https://github.com/alexjamk/TimeScreen/releases/download/3.4/TimeScreenControl-Setup-3.4.exe)
+1. [Скачайте установщик TimeScreen Control 3.5](https://github.com/alexjamk/TimeScreen/releases/download/3.5/TimeScreenControl-Setup-3.5.exe)
 2. Подтвердите запрос UAC и следуйте указаниям мастера
 3. Установщик скопирует файлы, зарегистрирует и проверит службу
 4. На последней странице можно сразу запустить настройки

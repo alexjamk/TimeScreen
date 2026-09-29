@@ -133,10 +133,10 @@ echo   - uninstall.bat             (uninstall)
 echo   - README.md                 (documentation)
 echo.
 echo Graphical installer:
-echo   - dist\Installer\TimeScreenControl-Setup-3.4.exe
+echo   - dist\Installer\TimeScreenControl-Setup-3.5.exe
 echo.
 echo Installation:
-echo   1. Copy TimeScreenControl-Setup-3.4.exe to the target PC
+echo   1. Copy TimeScreenControl-Setup-3.5.exe to the target PC
 echo   2. Run setup and follow the wizard
 echo.
 rmdir /s /q "%PYI_ROOT%" >nul 2>&1

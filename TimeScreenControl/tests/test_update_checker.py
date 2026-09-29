@@ -34,12 +34,12 @@ class TestUpdateChecker(unittest.TestCase):
             self.assertEqual(timeout, 8)
             self.assertIn("api.github.com", request.full_url)
             return FakeResponse(json.dumps({
-                "tag_name": "3.5",
-                "html_url": "https://github.com/alexjamk/TimeScreen/releases/tag/3.5",
+                "tag_name": "3.6",
+                "html_url": "https://github.com/alexjamk/TimeScreen/releases/tag/3.6",
             }).encode())
 
         release = fetch_latest_release(urlopen=opener)
-        self.assertEqual(release.version, "3.5")
+        self.assertEqual(release.version, "3.6")
         self.assertTrue(release.is_newer)
 
     def test_untrusted_release_url_is_rejected(self):

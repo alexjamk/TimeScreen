@@ -39,6 +39,7 @@ class LockScreen:
         self.cfg = ConfigManager(read_only=True)
         self.secondary_windows = []
         self.background_images = []
+        self._system_prompt_active = False
         self._setup_window()
         self._build_ui()
         self.root.after(1000, self._periodic_safety_check)
@@ -364,16 +365,45 @@ class LockScreen:
                 pass
         self.root.destroy()
 
+    def _set_lock_windows_topmost(self, enabled: bool, *, raise_windows: bool = False):
+        """Change topmost state without hiding the lock screen.
+
+        Native confirmation windows (including UAC when secure desktop is disabled)
+        must be allowed to appear above the blocker.  The desktop remains covered by
+        the full-screen windows while their topmost flag is temporarily disabled.
+        """
+        windows = [self.root, *self.secondary_windows]
+        for window in windows:
+            try:
+                window.attributes("-topmost", enabled)
+                if enabled and raise_windows:
+                    window.lift()
+            except tk.TclError:
+                pass
+
+    def _begin_system_prompt(self, *, demote: bool = True):
+        """Stop reclaiming focus while a Windows or Tk confirmation is active."""
+        self._system_prompt_active = True
+        if demote:
+            self._set_lock_windows_topmost(False)
+
+    def _end_system_prompt(self):
+        """Restore blocker priority after a confirmation closes or fails."""
+        self._system_prompt_active = False
+        self._set_lock_windows_topmost(True, raise_windows=True)
+
     def _windows_admin_unlock(self):
         """Unlock via Windows UAC elevation instead of entering the TimeScreen password."""
         if self._is_current_windows_admin():
             self._unlock_with_grace()
             return
 
+        self._begin_system_prompt()
         if self._request_uac_grace():
             self.status_label.config(text="Подтвердите запрос UAC")
             self.root.after(1000, self._poll_uac_grace)
         else:
+            self._end_system_prompt()
             self.status_label.config(text="Запрос UAC отменен или недоступен")
 
     def _is_current_windows_admin(self) -> bool:
@@ -414,6 +444,7 @@ class LockScreen:
             return
 
         if attempts <= 0:
+            self._end_system_prompt()
             self.status_label.config(text="UAC подтвержден не был или грейс-период не записался")
             return
 
@@ -421,8 +452,8 @@ class LockScreen:
 
     def _shake_window(self):
         """Bring the window back to the front after wrong password."""
-        self.root.lift()
-        self.root.attributes("-topmost", True)
+        if not self._system_prompt_active:
+            self._set_lock_windows_topmost(True, raise_windows=True)
 
     def _periodic_safety_check(self):
         """Auto-close when this user is no longer subject to blocking."""
@@ -440,29 +471,49 @@ class LockScreen:
             if not should_block:
                 self._destroy_all_windows()
                 return
-            self.root.lift()
-            self.root.attributes("-topmost", True)
-            for window in self.secondary_windows:
-                window.lift()
-                window.attributes("-topmost", True)
+            if not self._system_prompt_active:
+                self._set_lock_windows_topmost(True, raise_windows=True)
         except tk.TclError:
             return
         self.root.after(3000, self._periodic_safety_check)
 
     def _shutdown(self):
         """Shutdown computer."""
-        if messagebox.askyesno("Подтверждение", "Вы действительно хотите выключить компьютер?", parent=self.root):
-            subprocess.run(["shutdown", "/s", "/t", "0"], capture_output=True)
+        self._confirm_power_action(
+            "Вы действительно хотите выключить компьютер?",
+            ["shutdown", "/s", "/t", "0"],
+        )
 
     def _restart(self):
         """Restart computer."""
-        if messagebox.askyesno("Подтверждение", "Вы действительно хотите перезагрузить компьютер?", parent=self.root):
-            subprocess.run(["shutdown", "/r", "/t", "0"], capture_output=True)
+        self._confirm_power_action(
+            "Вы действительно хотите перезагрузить компьютер?",
+            ["shutdown", "/r", "/t", "0"],
+        )
 
     def _sleep(self):
         """Put computer to sleep."""
-        if messagebox.askyesno("Подтверждение", "Перевести компьютер в спящий режим?", parent=self.root):
-            subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState,0,0,1"], capture_output=True)
+        self._confirm_power_action(
+            "Перевести компьютер в спящий режим?",
+            ["rundll32.exe", "powrprof.dll,SetSuspendState,0,0,1"],
+        )
+
+    def _confirm_power_action(self, question: str, command):
+        """Show an accessible confirmation without exposing the desktop."""
+        # A Tk dialog is owned by the blocker and stays above it.  Keep the
+        # blocker topmost here, but prevent the periodic check from lifting the
+        # parent over its dialog.  UAC uses the demoted path separately.
+        self._begin_system_prompt(demote=False)
+        try:
+            if not messagebox.askyesno("Подтверждение", question, parent=self.root):
+                return False
+            result = subprocess.run(command, capture_output=True)
+            if result.returncode != 0:
+                self.status_label.config(text="Windows не удалось выполнить выбранное действие")
+                return False
+            return True
+        finally:
+            self._end_system_prompt()
 
     def run(self):
         """Start the lock screen."""
