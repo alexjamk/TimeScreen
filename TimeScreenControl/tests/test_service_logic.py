@@ -134,6 +134,13 @@ class TestServicePasswordUnlock(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertFalse(config.grace_was_set)
 
+    def test_malformed_or_oversized_unlock_request_is_rejected(self):
+        service = self.make_service()
+        self.assertFalse(service._handle_unlock_request([])["ok"])
+        self.assertFalse(service._handle_unlock_request({
+            "command": "grant_grace", "password": "x" * 257,
+        })["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

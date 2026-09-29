@@ -16,6 +16,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
+from urllib.parse import urlparse
 
 from config.manager import ConfigManager
 from config.paths import REMOTE_LOCK_PATH, REMOTE_STATE_PATH
@@ -25,10 +26,19 @@ from utils.windows_users import get_visible_windows_users
 
 
 DEFAULT_API_URL = "https://time.k-alex.ru/api.php"
+SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class RemoteSync:
     def __init__(self, state_path: Path = REMOTE_STATE_PATH, api_url: str = DEFAULT_API_URL):
+        parsed = urlparse(api_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Адрес удалённого управления должен использовать HTTPS")
         self.state_path = state_path
         self.lock_path = REMOTE_LOCK_PATH if state_path == REMOTE_STATE_PATH else state_path.with_suffix(".lock")
         self.api_url = api_url
@@ -41,7 +51,7 @@ class RemoteSync:
             return
         result = subprocess.run(
             [
-                "icacls.exe", str(path), "/inheritance:r", "/grant:r",
+                str(SYSTEM32 / "icacls.exe"), str(path), "/inheritance:r", "/grant:r",
                 "*S-1-5-18:F", "*S-1-5-32-544:F",
             ],
             stdout=subprocess.DEVNULL,
@@ -116,7 +126,7 @@ class RemoteSync:
 
         state = self._mutate(update)
         self.register(state)
-        return state
+        return self._load()
 
     def disable(self) -> None:
         self._mutate(lambda state: state.update({"enabled": False}))
@@ -142,8 +152,12 @@ class RemoteSync:
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            opener = urllib.request.build_opener(_NoRedirect)
+            with opener.open(request, timeout=12) as response:  # nosec B310
+                raw = response.read(1_048_577)
+                if len(raw) > 1_048_576:
+                    raise ValueError("Слишком большой ответ сервера")
+                data = json.loads(raw.decode("utf-8"))
         except (OSError, urllib.error.URLError, ValueError) as exc:
             raise RuntimeError("Сервер удалённого управления недоступен") from exc
         if not data.get("ok"):
@@ -157,6 +171,7 @@ class RemoteSync:
             "name": state.get("device_name") or socket.gethostname(),
             "platform": f"{platform.system()} {platform.release()}",
         }, state, authenticated=False)
+        self._mutate(lambda latest: latest.update({"registered": True}))
 
     def status(self) -> dict:
         state = self._load()
@@ -208,7 +223,9 @@ class RemoteSync:
         if not state.get("enabled"):
             return
         try:
-            self.register(state)
+            if not state.get("registered"):
+                self.register(state)
+                state = self._load()
             code = self.pairing_code(state)
             pair = self._request("device-pair-code", {"code": code}, state)
             cfg = ConfigManager(read_only=False)

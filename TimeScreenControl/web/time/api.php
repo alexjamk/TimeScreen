@@ -3,7 +3,8 @@ declare(strict_types=1);
 require __DIR__ . '/bootstrap.php';
 
 try {
-    $action=$_GET['action']??''; $method=$_SERVER['REQUEST_METHOD']??'GET';
+    $action=(string)($_GET['action']??''); $method=$_SERVER['REQUEST_METHOD']??'GET';
+    if(strlen($action)>40||!preg_match('/^[a-z-]*$/',$action)) error_response('Маршрут не найден',404);
     if($method==='OPTIONS') json_response(['ok'=>true]);
     if($action==='health' && $method==='GET'){
         db();
@@ -12,8 +13,9 @@ try {
 
     if($action==='register' && $method==='POST'){
         $data=json_input(); $email=text_lower(trim((string)($data['email']??''))); $password=(string)($data['password']??'');
-        rate_limit('register',($_SERVER['REMOTE_ADDR']??'').$email,5,3600);
+        rate_limit('register-ip',client_ip(),5,3600);
         if(!filter_var($email,FILTER_VALIDATE_EMAIL)||strlen($email)>254) error_response('Некорректный email');
+        rate_limit('register-account',$email,3,86400);
         $passwordLength=text_length($password);
         if($passwordLength<7||$passwordLength>256) error_response('Пароль должен содержать не менее 7 символов');
         $verify=random_token(); $db=db();
@@ -26,8 +28,9 @@ try {
 
     if($action==='resend-verification' && $method==='POST'){
         $data=json_input(); $email=text_lower(trim((string)($data['email']??'')));
-        rate_limit('resend-verification',($_SERVER['REMOTE_ADDR']??'').'|'.$email,3,3600);
+        rate_limit('resend-ip',client_ip(),10,3600);
         if(!filter_var($email,FILTER_VALIDATE_EMAIL)||strlen($email)>254) error_response('Некорректный email');
+        rate_limit('resend-account',$email,3,3600);
         $stmt=db()->prepare('SELECT id FROM users WHERE email=? AND verified_at IS NULL'); $stmt->execute([$email]); $user=$stmt->fetch();
         if($user){
             $verify=random_token(); $url=cfg()['base_url'].'/verify.php?token='.rawurlencode($verify);
@@ -39,10 +42,16 @@ try {
     }
 
     if($action==='login' && $method==='POST'){
-        $data=json_input(); $email=text_lower(trim((string)($data['email']??''))); rate_limit('login',($_SERVER['REMOTE_ADDR']??'').$email,10,900);
+        $data=json_input(); $email=text_lower(trim((string)($data['email']??''))); $password=(string)($data['password']??'');
+        rate_limit('login-ip',client_ip(),30,900);
+        if(strlen($email)>254||text_length($password)>256) error_response('Неверный email или пароль',401);
+        rate_limit('login-account',$email,10,900);
         $stmt=db()->prepare('SELECT * FROM users WHERE email=?'); $stmt->execute([$email]); $user=$stmt->fetch();
-        if(!$user||!password_verify((string)($data['password']??''),$user['password_hash'])) error_response('Неверный email или пароль',401);
-        if(!$user['verified_at']) error_response('Сначала подтвердите email',403);
+        $hash=$user?$user['password_hash']:'$2y$10$Rnu4NQ4h/Seqsm4COBzmQe8Xj2uIp7DTPugjni6amTOuCRERvEmUm';
+        $valid=password_verify($password,$hash);
+        if(!$user||!$valid||!$user['verified_at']) error_response('Неверный email или пароль, либо email не подтверждён',401);
+        if(password_needs_rehash($user['password_hash'],PASSWORD_DEFAULT)) db()->prepare('UPDATE users SET password_hash=? WHERE id=?')->execute([password_hash($password,PASSWORD_DEFAULT),$user['id']]);
+        db()->prepare('DELETE FROM sessions WHERE user_id=? AND token_hash NOT IN (SELECT token_hash FROM sessions WHERE user_id=? ORDER BY created_at DESC LIMIT 4)')->execute([$user['id'],$user['id']]);
         $session=random_token(); $csrf=random_token(); db()->prepare('INSERT INTO sessions(token_hash,user_id,csrf_hash,expires_at,created_at) VALUES(?,?,?,?,?)')->execute([token_hash($session),$user['id'],token_hash($csrf),time()+2592000,time()]);
         set_session_cookie($session); audit((int)$user['id'],null,'login'); json_response(['ok'=>true,'csrf'=>$csrf,'email'=>$user['email']]);
     }
@@ -61,10 +70,13 @@ try {
     if($action==='device-register' && $method==='POST'){
         $data=json_input();
         $id=(string)($data['device_id']??''); $token=(string)($data['token']??''); $name=text_limit(trim((string)($data['name']??'Компьютер')),100); $platform=text_limit(trim((string)($data['platform']??'Windows')),100);
-        if(!preg_match('/^[a-f0-9-]{36}$/',$id)||strlen($token)<32) error_response('Некорректные данные устройства');
+        if(!preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/',$id)||!preg_match('/^[A-Za-z0-9_-]{32,128}$/',$token)) error_response('Некорректные данные устройства');
         $stmt=db()->prepare('SELECT token_hash FROM devices WHERE id=?'); $stmt->execute([$id]); $existing=$stmt->fetch();
         if($existing && !hash_equals($existing['token_hash'],token_hash($token))) error_response('Устройство уже зарегистрировано',409);
-        if(!$existing) rate_limit('device-register',$_SERVER['REMOTE_ADDR']??'',20,3600);
+        if(!$existing) rate_limit('device-register-ip',client_ip(),20,3600);
+        // Versions up to 3.7 refreshed registration every 20 seconds. Keep a
+        // compatibility ceiling while newer clients register only once.
+        else rate_limit('device-register-id',$id,240,3600);
         db()->prepare('INSERT INTO devices(id,token_hash,name,platform,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform')->execute([$id,token_hash($token),$name,$platform,time()]);
         json_response(['ok'=>true]);
     }
@@ -78,7 +90,7 @@ try {
 
     if($action==='pair' && $method==='POST'){
         $user=current_user(true); $data=json_input(); $code=(string)($data['code']??'');
-        rate_limit('pair-user',(string)$user['id'],5,900); rate_limit('pair-ip',$_SERVER['REMOTE_ADDR']??'',20,900);
+        rate_limit('pair-user',(string)$user['id'],5,900); rate_limit('pair-ip',client_ip(),20,900);
         $count=db()->prepare('SELECT COUNT(*) FROM devices WHERE owner_user_id=?'); $count->execute([$user['id']]);
         if((int)$count->fetchColumn()>=3) error_response('Можно связать не более трёх устройств',409);
         if(!preg_match('/^\d{6}$/',$code)) error_response('Код не найден или истёк',404);
@@ -104,7 +116,7 @@ try {
         $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??''); $username=text_limit(trim((string)($data['username']??'')),128); $minutes=filter_var($data['minutes']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>1,'max_range'=>180]]); if($minutes===false) error_response('Допустимо от 1 до 180 минут');
         $stmt=db()->prepare('SELECT available_users_json FROM devices WHERE id=? AND owner_user_id=?'); $stmt->execute([$id,$user['id']]); $device=$stmt->fetch(); if(!$device) error_response('Устройство не найдено',404);
         $available=json_decode($device['available_users_json'],true)?:[]; if(!$username||!in_array($username,$available,true)) error_response('Пользователь не найден на устройстве',404);
-        db()->prepare('INSERT INTO commands(device_id,type,payload_json,created_at) VALUES(?,?,?,?)')->execute([$id,'grant-time',json_encode(['minutes'=>$minutes,'username'=>$username],JSON_UNESCAPED_UNICODE),time()]); audit((int)$user['id'],$id,'grant-time'); json_response(['ok'=>true]);
+        $now=time(); db()->prepare('INSERT INTO commands(device_id,type,payload_json,created_at,expires_at) VALUES(?,?,?,?,?)')->execute([$id,'grant-time',json_encode(['minutes'=>$minutes,'username'=>$username],JSON_UNESCAPED_UNICODE),$now,$now+3600]); audit((int)$user['id'],$id,'grant-time'); json_response(['ok'=>true]);
     }
 
     if($action==='unlink' && $method==='POST'){
@@ -117,7 +129,7 @@ try {
         $stmt=$db->prepare('SELECT * FROM devices WHERE id=?'); $stmt->execute([$device['id']]); $fresh=$stmt->fetch(); $serverRevision=(int)$fresh['config_revision'];
         if(!$fresh['config_json'] || ($known===$serverRevision && $localDirty)){$serverRevision++; $db->prepare('UPDATE devices SET config_json=?,config_revision=?,config_updated_at=? WHERE id=?')->execute([json_encode($settings,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),$serverRevision,time(),$device['id']]); $remote=$settings;} else {$remote=json_decode($fresh['config_json'],true);}
         $db->prepare('UPDATE devices SET available_users_json=?,user_statuses_json=?,last_seen_at=? WHERE id=?')->execute([json_encode($users,JSON_UNESCAPED_UNICODE),json_encode($statuses,JSON_UNESCAPED_UNICODE),time(),$device['id']]);
-        $cmd=$db->prepare("SELECT id,type,payload_json FROM commands WHERE device_id=? AND status IN ('pending','delivered') ORDER BY id LIMIT 10"); $cmd->execute([$device['id']]); $commands=$cmd->fetchAll();
+        $cmd=$db->prepare("SELECT id,type,payload_json FROM commands WHERE device_id=? AND status IN ('pending','delivered') AND (expires_at IS NULL OR expires_at>=?) ORDER BY id LIMIT 10"); $cmd->execute([$device['id'],time()]); $commands=$cmd->fetchAll();
         foreach($commands as &$c){$c['payload']=json_decode($c['payload_json'],true); unset($c['payload_json']); $db->prepare("UPDATE commands SET status='delivered',delivered_at=? WHERE id=?")->execute([time(),$c['id']]);}
         $db->commit(); json_response(['ok'=>true,'paired'=>(bool)$fresh['owner_user_id'],'revision'=>$serverRevision,'config'=>$remote,'commands'=>$commands]);
     }

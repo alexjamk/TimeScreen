@@ -334,6 +334,30 @@ class LockScreen:
         return True
 
     @staticmethod
+    def _pipe_server_is_system(pipe):
+        """Reject a user-created pipe that could steal the entered password."""
+        import win32api
+        import win32con
+        import win32security
+
+        server_pid = ctypes.c_ulong()
+        if not ctypes.windll.kernel32.GetNamedPipeServerProcessId(
+                int(pipe), ctypes.byref(server_pid)):
+            return False
+        process = token = None
+        try:
+            access = getattr(win32con, "PROCESS_QUERY_LIMITED_INFORMATION", 0x1000)
+            process = win32api.OpenProcess(access, False, server_pid.value)
+            token = win32security.OpenProcessToken(process, win32con.TOKEN_QUERY)
+            sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+            return bool(win32security.IsWellKnownSid(sid, win32security.WinLocalSystemSid))
+        finally:
+            if token is not None:
+                win32api.CloseHandle(token)
+            if process is not None:
+                win32api.CloseHandle(process)
+
+    @staticmethod
     def _request_service_grace(password):
         """Ask the SYSTEM service to verify the TimeScreen password."""
         try:
@@ -348,6 +372,8 @@ class LockScreen:
                 0, None, win32file.OPEN_EXISTING, 0, None,
             )
             try:
+                if not LockScreen._pipe_server_is_system(pipe):
+                    return False, "Не удалось подтвердить подлинность службы TimeScreen"
                 request = json.dumps({"command": "grant_grace", "password": password}).encode("utf-8")
                 win32file.WriteFile(pipe, request)
                 _, raw = win32file.ReadFile(pipe, 4096)
@@ -487,21 +513,21 @@ class LockScreen:
         """Shutdown computer."""
         self._confirm_power_action(
             "Вы действительно хотите выключить компьютер?",
-            ["shutdown", "/s", "/t", "0"],
+            [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "shutdown.exe"), "/s", "/t", "0"],
         )
 
     def _restart(self):
         """Restart computer."""
         self._confirm_power_action(
             "Вы действительно хотите перезагрузить компьютер?",
-            ["shutdown", "/r", "/t", "0"],
+            [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "shutdown.exe"), "/r", "/t", "0"],
         )
 
     def _sleep(self):
         """Put computer to sleep."""
         self._confirm_power_action(
             "Перевести компьютер в спящий режим?",
-            ["rundll32.exe", "powrprof.dll,SetSuspendState,0,0,1"],
+            [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "rundll32.exe"), "powrprof.dll,SetSuspendState,0,0,1"],
         )
 
     def _confirm_power_action(self, question: str, command):

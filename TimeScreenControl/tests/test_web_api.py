@@ -105,6 +105,35 @@ class TestWebApi(unittest.TestCase):
         self.call("unlink", {"device_id":device_id}, {"X-CSRF-Token":csrf}, cookie)
         revoked,_=self.call("device-revoke", {}, auth); self.assertTrue(revoked["ok"])
 
+    def test_security_headers_body_limit_and_login_rate_limit(self):
+        response = urllib.request.urlopen(self.base + "/api.php?action=health", timeout=3)
+        self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(response.headers.get("Cross-Origin-Opener-Policy"), "same-origin")
+        self.assertIn("frame-ancestors 'none'", response.headers.get("Content-Security-Policy", ""))
+        response.close()
+
+        oversized = urllib.request.Request(
+            self.base + "/api.php?action=login",
+            data=json.dumps({"email":"large@example.test","password":"x" * 66000}).encode(),
+            method="POST",
+            headers={"Content-Type":"application/json"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(oversized, timeout=3)
+        self.assertEqual(rejected.exception.code, 413)
+        rejected.exception.close()
+
+        for _ in range(10):
+            with self.assertRaises(urllib.error.HTTPError) as invalid:
+                self.call("login", {"email":"brute-force@example.test","password":"incorrect"})
+            self.assertEqual(invalid.exception.code, 401)
+            invalid.exception.close()
+        with self.assertRaises(urllib.error.HTTPError) as limited:
+            self.call("login", {"email":"brute-force@example.test","password":"incorrect"})
+        self.assertEqual(limited.exception.code, 429)
+        self.assertIsNotNone(limited.exception.headers.get("Retry-After"))
+        limited.exception.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -850,7 +850,7 @@ class SettingsApp:
 
         try:
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/F"],
+                [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"), "/PID", str(pid), "/F"],
                 capture_output=True,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
@@ -871,7 +871,7 @@ class SettingsApp:
 
         try:
             result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tasklist.exe"), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                 capture_output=True,
                 text=True,
                 creationflags=subprocess.CREATE_NO_WINDOW

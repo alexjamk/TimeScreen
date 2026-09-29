@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from typing import List
+from pathlib import Path
 
 
 EXCLUDED_USERS = {
@@ -51,7 +52,8 @@ def get_visible_windows_users() -> List[str]:
                 "Select-Object -ExpandProperty Name | ConvertTo-Json"
             )
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"),
+                 "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
                 capture_output=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )

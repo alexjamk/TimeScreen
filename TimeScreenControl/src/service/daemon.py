@@ -295,7 +295,7 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
             try:
                 pipe = win32pipe.CreateNamedPipe(
                     SERVICE_PIPE_NAME,
-                    win32pipe.PIPE_ACCESS_DUPLEX,
+                    win32pipe.PIPE_ACCESS_DUPLEX | 0x00080000,  # FILE_FLAG_FIRST_PIPE_INSTANCE
                     win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT
                     | getattr(win32pipe, "PIPE_REJECT_REMOTE_CLIENTS", 0x8),
                     win32pipe.PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0,
@@ -325,7 +325,10 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         self._failed_unlocks = [attempt for attempt in self._failed_unlocks if now - attempt < 60]
         if len(self._failed_unlocks) >= 5:
             return {"ok": False, "error": "Слишком много попыток. Повторите через минуту"}
-        if request.get("command") != "grant_grace" or not isinstance(request.get("password"), str):
+        if (not isinstance(request, dict)
+                or request.get("command") != "grant_grace"
+                or not isinstance(request.get("password"), str)
+                or len(request["password"]) > 256):
             return {"ok": False, "error": "Недопустимая команда"}
         cfg = ConfigManager(read_only=False)
         if not cfg.verify_password(request["password"]):

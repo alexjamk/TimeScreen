@@ -48,7 +48,7 @@ def fetch_latest_release(
     timeout: int = 8,
     urlopen: Optional[Callable] = None,
 ) -> ReleaseInfo:
-    opener = urlopen or (lambda request, value: urllib.request.urlopen(request, timeout=value))
+    opener = urlopen or (lambda request, value: urllib.request.urlopen(request, timeout=value))  # nosec B310
     request = urllib.request.Request(
         LATEST_RELEASE_API,
         headers={
@@ -58,6 +58,10 @@ def fetch_latest_release(
         },
     )
     with opener(request, timeout) as response:
+        if hasattr(response, "geturl"):
+            final = urlparse(response.geturl())
+            if final.scheme != "https" or final.netloc.lower() != "api.github.com":
+                raise ValueError("Сервер обновлений выполнил недопустимое перенаправление")
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Некорректный ответ сервера обновлений")

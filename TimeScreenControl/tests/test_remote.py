@@ -28,6 +28,12 @@ class TestRemoteSync(unittest.TestCase):
         self.assertEqual(first, self.remote.pairing_code(state, 119))
         self.assertNotEqual(first, self.remote.pairing_code(state, 120))
 
+    def test_remote_endpoint_must_use_https(self):
+        with self.assertRaises(ValueError):
+            RemoteSync(self.path, "http://example.invalid/api.php")
+        with self.assertRaises(ValueError):
+            RemoteSync(self.path, "file:///tmp/api.php")
+
     def test_enable_generates_persistent_device_credentials(self):
         with patch.object(self.remote, "register"):
             first = self.remote.enable("Домашний ПК")

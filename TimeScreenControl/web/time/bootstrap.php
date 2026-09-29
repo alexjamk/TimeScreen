@@ -2,6 +2,23 @@
 declare(strict_types=1);
 
 const SESSION_COOKIE = 'timescreen_session';
+const MAX_JSON_BODY_BYTES = 65536;
+const SCHEMA_VERSION = 3;
+
+function security_headers(): void {
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: no-referrer');
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    header('Cross-Origin-Opener-Policy: same-origin');
+    header('Cross-Origin-Resource-Policy: same-origin');
+    header('X-Permitted-Cross-Domain-Policies: none');
+    header('X-Robots-Tag: noindex, nofollow');
+    if ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443) {
+        header('Strict-Transport-Security: max-age=31536000');
+    }
+}
+security_headers();
 
 function cfg(): array {
     static $config;
@@ -61,6 +78,9 @@ function db(): PDO|SqliteConnection {
 }
 
 function migrate(PDO|SqliteConnection $db): void {
+    $versionStatement=$db->prepare('PRAGMA user_version'); $versionStatement->execute();
+    $version=(int)$versionStatement->fetchColumn();
+    if($version<SCHEMA_VERSION){
     $db->exec(<<<'SQL'
 CREATE TABLE IF NOT EXISTS users (
  id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
@@ -94,17 +114,46 @@ CREATE TABLE IF NOT EXISTS audit_log (
  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, device_id TEXT, action TEXT NOT NULL,
  ip_hash TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_meta (
+ key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 SQL);
     try {$db->exec("ALTER TABLE devices ADD COLUMN user_statuses_json TEXT NOT NULL DEFAULT '[]'");}
     catch(Throwable $ignored) {}
-    $db->prepare('DELETE FROM sessions WHERE expires_at < ?')->execute([time()]);
-    $db->prepare('DELETE FROM users WHERE verified_at IS NULL AND verify_expires < ?')->execute([time()]);
-    $db->prepare('DELETE FROM devices WHERE owner_user_id IS NULL AND created_at < ?')->execute([time()-604800]);
+    try {$db->exec('ALTER TABLE commands ADD COLUMN expires_at INTEGER');}
+    catch(Throwable $ignored) {}
+    $db->exec('PRAGMA user_version='.SCHEMA_VERSION);
+    }
+    run_maintenance($db);
+}
+
+function run_maintenance(PDO|SqliteConnection $db): void {
+    $now=time();
+    $stmt=$db->prepare("INSERT INTO app_meta(key,value) VALUES('last_maintenance',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(app_meta.value AS INTEGER)<?");
+    $stmt->execute([(string)$now,$now-3600]);
+    if($stmt->rowCount()!==1) return;
+    $db->prepare('DELETE FROM sessions WHERE expires_at < ?')->execute([$now]);
+    $db->prepare('DELETE FROM users WHERE verified_at IS NULL AND verify_expires < ?')->execute([$now]);
+    $db->prepare('DELETE FROM devices WHERE owner_user_id IS NULL AND created_at < ?')->execute([$now-604800]);
+    $db->prepare('DELETE FROM rate_limits WHERE window_start < ?')->execute([$now-86400]);
+    $db->prepare("DELETE FROM commands WHERE (expires_at IS NOT NULL AND expires_at < ?) OR (status='done' AND created_at < ?)")->execute([$now,$now-604800]);
+    $db->prepare('DELETE FROM audit_log WHERE created_at < ?')->execute([$now-7776000]);
 }
 
 function json_input(): array {
-    $data = json_decode(file_get_contents('php://input') ?: '{}', true);
-    if (!is_array($data)) error_response('Некорректный JSON', 400);
+    $contentType=text_lower(trim(explode(';',$_SERVER['CONTENT_TYPE']??'',2)[0]));
+    if($contentType!=='application/json') error_response('Требуется Content-Type application/json',415);
+    $declared=(int)($_SERVER['CONTENT_LENGTH']??0);
+    if($declared>MAX_JSON_BODY_BYTES) error_response('Запрос слишком большой',413);
+    $stream=fopen('php://input','rb');
+    $raw=$stream===false?'':stream_get_contents($stream,MAX_JSON_BODY_BYTES+1);
+    if($stream!==false) fclose($stream);
+    if($raw===false||strlen($raw)>MAX_JSON_BODY_BYTES) error_response('Запрос слишком большой',413);
+    try {$data=json_decode($raw?:'{}',true,32,JSON_THROW_ON_ERROR);}
+    catch(JsonException $e){error_response('Некорректный JSON',400);}
+    if (!is_array($data)) error_response('Некорректный JSON',400);
     return $data;
 }
 
@@ -115,7 +164,8 @@ function json_response(array $data, int $status = 200): never {
 function error_response(string $message, int $status = 400): never { json_response(['ok'=>false,'error'=>$message], $status); }
 function random_token(int $bytes = 32): string { return rtrim(strtr(base64_encode(random_bytes($bytes)), '+/', '-_'), '='); }
 function token_hash(string $value): string { return hash_hmac('sha256', $value, cfg()['app_key']); }
-function client_ip_hash(): string { return token_hash($_SERVER['REMOTE_ADDR'] ?? 'unknown'); }
+function client_ip(): string { return (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown'); }
+function client_ip_hash(): string { return token_hash(client_ip()); }
 function text_lower(string $value): string { return function_exists('mb_strtolower') ? mb_strtolower($value) : strtolower($value); }
 function text_limit(string $value, int $length): string {
     if(function_exists('mb_substr')) return mb_substr($value,0,$length);
@@ -129,28 +179,32 @@ function text_length(string $value): int {
 }
 
 function rate_limit(string $bucket, string $identity, int $max, int $window): void {
-    $db=db(); $now=time(); $start=$now-($now%$window); $identity=token_hash($identity); $db->beginTransaction();
-    $stmt=$db->prepare('SELECT window_start,attempts FROM rate_limits WHERE bucket=? AND identity=?'); $stmt->execute([$bucket,$identity]); $row=$stmt->fetch();
-    $attempts=($row && (int)$row['window_start']===$start)?(int)$row['attempts']+1:1;
-    $db->prepare('INSERT INTO rate_limits(bucket,identity,window_start,attempts) VALUES(?,?,?,?) ON CONFLICT(bucket,identity) DO UPDATE SET window_start=excluded.window_start,attempts=excluded.attempts')->execute([$bucket,$identity,$start,$attempts]);
-    $db->commit(); if($attempts>$max) error_response('Слишком много попыток. Повторите позже.',429);
+    $db=db(); $now=time(); $start=$now-($now%$window); $identity=token_hash($identity);
+    $db->prepare('INSERT INTO rate_limits(bucket,identity,window_start,attempts) VALUES(?,?,?,1) ON CONFLICT(bucket,identity) DO UPDATE SET window_start=excluded.window_start,attempts=CASE WHEN rate_limits.window_start=excluded.window_start THEN rate_limits.attempts+1 ELSE 1 END')->execute([$bucket,$identity,$start]);
+    $stmt=$db->prepare('SELECT attempts FROM rate_limits WHERE bucket=? AND identity=?'); $stmt->execute([$bucket,$identity]);
+    if((int)$stmt->fetchColumn()>$max){header('Retry-After: '.max(1,$start+$window-$now)); error_response('Слишком много попыток. Повторите позже.',429);}
 }
 
 function bearer(): string {
     $header=$_SERVER['HTTP_AUTHORIZATION']??'';
-    if(!preg_match('/^Bearer\s+(.+)$/i',$header,$m)) error_response('Требуется авторизация устройства',401);
+    if(strlen($header)>256||!preg_match('/^Bearer\s+(.+)$/i',$header,$m)) error_response('Требуется авторизация устройства',401);
     return trim($m[1]);
 }
 function device_auth(): array {
+    // A generous IP ceiling avoids blocking several households behind one
+    // carrier NAT; the tighter per-device limit below handles abusive clients.
+    rate_limit('device-auth-ip',client_ip(),1200,600);
     $parts=explode('.',bearer(),2);
-    if(count($parts)!==2 || !preg_match('/^[a-f0-9-]{36}$/',$parts[0])) error_response('Недействительный токен устройства',401);
+    if(count($parts)!==2 || !preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/',$parts[0]) || !preg_match('/^[A-Za-z0-9_-]{32,128}$/',$parts[1])) error_response('Недействительный токен устройства',401);
     $stmt=db()->prepare('SELECT * FROM devices WHERE id=?'); $stmt->execute([$parts[0]]); $row=$stmt->fetch();
     if(!$row || !hash_equals($row['token_hash'],token_hash($parts[1]))) error_response('Недействительный токен устройства',401);
+    rate_limit('device-auth-id',$row['id'],150,600);
     return $row;
 }
 
 function current_user(bool $csrf=false): array {
     $token=$_COOKIE[SESSION_COOKIE]??''; if(!$token) error_response('Требуется вход',401);
+    if(strlen($token)>128||!preg_match('/^[A-Za-z0-9_-]{32,128}$/',$token)) error_response('Требуется вход',401);
     $stmt=db()->prepare('SELECT u.*,s.csrf_hash FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?');
     $stmt->execute([token_hash($token),time()]); $user=$stmt->fetch(); if(!$user) error_response('Сессия истекла',401);
     if($csrf){$value=$_SERVER['HTTP_X_CSRF_TOKEN']??''; if(!$value || !hash_equals($user['csrf_hash'],token_hash($value))) error_response('Недействительный CSRF-токен',403);}
