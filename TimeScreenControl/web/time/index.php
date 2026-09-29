@@ -25,6 +25,6 @@ header('Content-Type: text/html; charset=utf-8');
  <fieldset><legend>Контролируемые пользователи</legend><div id="users"></div></fieldset>
  <fieldset><legend>Разрешённые интервалы</legend><div id="intervals"></div><button id="add-interval" type="button" class="secondary">Добавить интервал</button></fieldset>
  <fieldset><legend>Регулярные перерывы</legend><label class="check"><input id="break-enabled" type="checkbox"> Включить</label><div class="row"><label>Работа, минут<input id="work-minutes" type="number" min="1" max="1440"></label><label>Перерыв, минут<input id="break-minutes" type="number" min="1" max="180"></label></div></fieldset>
- <div class="actions"><button type="submit">Сохранить</button><button type="button" class="secondary grant" data-minutes="10">+10 минут</button><button type="button" class="secondary grant" data-minutes="30">+30 минут</button><button id="unlink" type="button" class="danger">Отвязать</button></div>
+ <div class="actions"><button type="submit">Сохранить</button><button id="unlink" type="button" class="danger">Отвязать</button></div>
  </form></dialog>
 <div id="toast" role="status"></div><script src="app.js" defer></script></body></html>

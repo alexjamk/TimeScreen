@@ -29,10 +29,10 @@ class FakeConfig:
     def is_controlled_user(self, username):
         return username.casefold() == self.blocked_user.casefold()
 
-    def is_in_grace(self):
+    def is_in_grace(self, username=None):
         return False
 
-    def is_allowed_time(self):
+    def is_allowed_time(self, username=None):
         return False
 
 
@@ -86,7 +86,7 @@ class TestServiceUserScoping(unittest.TestCase):
         config = FakeConfig("Nobody")
         config.is_controlled_user = lambda username: username.casefold() == "child"
         config.should_block_user = lambda username: False
-        config.is_allowed_time = lambda: True
+        config.is_allowed_time = lambda username=None: True
         with patch("service.daemon.ConfigManager", return_value=config):
             service._check_and_enforce()
         self.assertEqual(service.actions, [("notify", 7, 10), ("lock", 7, "Child")])
@@ -102,7 +102,7 @@ class FakeUnlockConfig:
     def verify_password(self, password):
         return password == self.expected_password
 
-    def set_grace(self):
+    def set_grace(self, username=None):
         self.grace_was_set = self.save_ok
         return self.save_ok
 
@@ -111,6 +111,7 @@ class TestServicePasswordUnlock(unittest.TestCase):
     def make_service(self):
         service = TimeScreenService.__new__(TimeScreenService)
         service._failed_unlocks = []
+        service._get_active_identity = lambda: (7, "Child")
         return service
 
     def test_test_password_grants_grace(self):

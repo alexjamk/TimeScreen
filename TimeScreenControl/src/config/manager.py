@@ -25,6 +25,7 @@ class ConfigManager:
         "show_timer": True,
         "timer_position": [100, 100],
         "grace_until": None,
+        "grace_until_by_user": {},
         "break_enabled": False,
         "break_duration_minutes": 10,
         "work_duration_minutes": 60,
@@ -44,6 +45,7 @@ class ConfigManager:
             "password_hash": None, "intervals": [], "enabled": True,
             "controlled_users": [], "show_timer": False,
             "timer_position": [100, 100], "grace_until": None,
+            "grace_until_by_user": {},
             "break_enabled": False, "break_duration_minutes": 10,
             "work_duration_minutes": 60,
             "_tampered": True, "_tamper_reason": reason,
@@ -81,6 +83,11 @@ class ConfigManager:
         if raw.get("password_hash") is not None and not isinstance(raw.get("password_hash"), str):
             return False
         if raw.get("grace_until") is not None and not isinstance(raw.get("grace_until"), str):
+            return False
+        user_grace = raw.get("grace_until_by_user", {})
+        if (not isinstance(user_grace, dict)
+                or not all(isinstance(key, str) and isinstance(value, str)
+                           for key, value in user_grace.items())):
             return False
         if not isinstance(raw.get("break_enabled", False), bool):
             return False
@@ -385,10 +392,10 @@ class ConfigManager:
     def set_timer_position(self, x: int, y: int) -> bool:
         return self._mutate(lambda data: data.update(timer_position=[int(x), int(y)]) is None)
 
-    def set_grace(self) -> bool:
-        return self.set_grace_minutes(self.GRACE_MINUTES)
+    def set_grace(self, username: Optional[str] = None) -> bool:
+        return self.set_grace_minutes(self.GRACE_MINUTES, username=username)
 
-    def set_grace_minutes(self, minutes: int) -> bool:
+    def set_grace_minutes(self, minutes: int, username: Optional[str] = None) -> bool:
         try:
             value = int(minutes)
         except (TypeError, ValueError):
@@ -397,21 +404,42 @@ class ConfigManager:
         if not 1 <= value <= 180:
             self.last_error = "Можно добавить от 1 до 180 минут"
             return False
-        now = datetime.datetime.now()
-        base = now
-        existing = self.config.get("grace_until")
-        if existing:
-            try:
-                current_until = datetime.datetime.fromisoformat(existing)
-                if current_until > now:
-                    base = current_until
-            except (TypeError, ValueError):
-                pass
-        until = base + datetime.timedelta(minutes=value)
-        return self._mutate(lambda data: data.update(grace_until=until.isoformat()) is None)
+        normalized = self.normalize_username(username) if username else ""
 
-    def get_grace_remaining_seconds(self, now: Optional[datetime.datetime] = None) -> Optional[int]:
-        timestamp = self.config.get("grace_until")
+        def change(data: dict) -> bool:
+            now = datetime.datetime.now()
+            grace_map = dict(data.get("grace_until_by_user", {}))
+            existing = grace_map.get(normalized) if normalized else data.get("grace_until")
+            base = now
+            if existing:
+                try:
+                    current_until = datetime.datetime.fromisoformat(existing)
+                    if current_until > now:
+                        base = current_until
+                except (TypeError, ValueError):
+                    pass
+            until = (base + datetime.timedelta(minutes=value)).isoformat()
+            if normalized:
+                grace_map[normalized] = until
+                data["grace_until_by_user"] = grace_map
+            else:
+                data["grace_until"] = until
+            return True
+
+        return self._mutate(change)
+
+    def get_grace_remaining_seconds(
+        self,
+        now: Optional[datetime.datetime] = None,
+        username: Optional[str] = None,
+    ) -> Optional[int]:
+        timestamp = None
+        if username:
+            timestamp = self.config.get("grace_until_by_user", {}).get(
+                self.normalize_username(username)
+            )
+        # Preserve an existing pre-3.7 global grace period until it expires.
+        timestamp = timestamp or self.config.get("grace_until")
         if not timestamp:
             return None
         try:
@@ -421,11 +449,17 @@ class ConfigManager:
         except (TypeError, ValueError):
             return None
 
-    def is_in_grace(self, now: Optional[datetime.datetime] = None) -> bool:
-        return self.get_grace_remaining_seconds(now) is not None
+    def is_in_grace(
+        self,
+        now: Optional[datetime.datetime] = None,
+        username: Optional[str] = None,
+    ) -> bool:
+        return self.get_grace_remaining_seconds(now, username=username) is not None
 
     def clear_grace(self) -> bool:
-        return self._mutate(lambda data: data.update(grace_until=None) is None)
+        return self._mutate(
+            lambda data: data.update(grace_until=None, grace_until_by_user={}) is None
+        )
 
     def _iter_windows(self, reference: datetime.datetime, days_forward: int = 8) -> Iterator[Tuple[datetime.datetime, datetime.datetime]]:
         for offset in range(-1, days_forward + 1):
@@ -441,13 +475,17 @@ class ConfigManager:
                     end += datetime.timedelta(days=1)
                 yield start, end
 
-    def is_allowed_time(self, now: Optional[datetime.datetime] = None) -> bool:
+    def is_allowed_time(
+        self,
+        now: Optional[datetime.datetime] = None,
+        username: Optional[str] = None,
+    ) -> bool:
         if self.config.get("_tampered"):
             return False
         if not self.is_enabled():
             return True
         current = now or datetime.datetime.now()
-        if self.is_in_grace(current):
+        if self.is_in_grace(current, username=username):
             return True
         if not self.config.get("intervals"):
             return True
@@ -458,24 +496,28 @@ class ConfigManager:
         return (
             self.is_enabled()
             and self.is_controlled_user(username)
-            and not self.is_in_grace(now)
-            and not self.is_allowed_time(now)
+            and not self.is_in_grace(now, username=username)
+            and not self.is_allowed_time(now, username=username)
         )
 
-    def get_next_event(self, now: Optional[datetime.datetime] = None) -> Tuple[Optional[int], Optional[str]]:
+    def get_next_event(
+        self,
+        now: Optional[datetime.datetime] = None,
+        username: Optional[str] = None,
+    ) -> Tuple[Optional[int], Optional[str]]:
         current = now or datetime.datetime.now()
-        grace_seconds = self.get_grace_remaining_seconds(current)
+        grace_seconds = self.get_grace_remaining_seconds(current, username=username)
         if grace_seconds is not None:
             return grace_seconds, "grace"
         if self.config.get("_tampered"):
             return None, "blocked_no_schedule"
         if not self.is_enabled() or not self.config.get("intervals"):
             return None, None
-        allowed_now = self.is_allowed_time(current)
+        allowed_now = self.is_allowed_time(current, username=username)
         boundaries = sorted({point for window in self._iter_windows(current, 8) for point in window if point > current})
         for boundary in boundaries:
             after = boundary + datetime.timedelta(microseconds=1)
-            if self.is_allowed_time(after) != allowed_now:
+            if self.is_allowed_time(after, username=username) != allowed_now:
                 seconds = max(0, int((boundary - current).total_seconds()))
                 return seconds, "lock" if allowed_now else "unlock"
         return (None, None) if allowed_now else (None, "blocked_no_schedule")

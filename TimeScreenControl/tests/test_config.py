@@ -112,6 +112,11 @@ class TestConfigManager(TemporaryConfigMixin, unittest.TestCase):
         self.assertIsNotNone(remaining)
         self.assertGreater(remaining, 29 * 60)
 
+    def test_grace_can_be_limited_to_one_user(self):
+        self.assertTrue(self.cfg.set_grace_minutes(10, username="Child"))
+        self.assertTrue(self.cfg.is_in_grace(username="child"))
+        self.assertFalse(self.cfg.is_in_grace(username="Administrator"))
+
     def test_remote_grants_extend_existing_grace(self):
         self.assertTrue(self.cfg.set_grace_minutes(10))
         first = datetime.fromisoformat(self.cfg.config["grace_until"])

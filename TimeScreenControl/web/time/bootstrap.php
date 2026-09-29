@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS devices (
  token_hash TEXT NOT NULL, name TEXT NOT NULL, platform TEXT NOT NULL,
  pairing_hash TEXT, pairing_expires INTEGER, config_json TEXT, config_revision INTEGER NOT NULL DEFAULT 0,
  config_updated_at INTEGER NOT NULL DEFAULT 0, available_users_json TEXT NOT NULL DEFAULT '[]',
+ user_statuses_json TEXT NOT NULL DEFAULT '[]',
  last_seen_at INTEGER, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_devices_pairing ON devices(pairing_hash, pairing_expires);
@@ -94,6 +95,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
  ip_hash TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 SQL);
+    try {$db->exec("ALTER TABLE devices ADD COLUMN user_statuses_json TEXT NOT NULL DEFAULT '[]'");}
+    catch(Throwable $ignored) {}
     $db->prepare('DELETE FROM sessions WHERE expires_at < ?')->execute([time()]);
     $db->prepare('DELETE FROM users WHERE verified_at IS NULL AND verify_expires < ?')->execute([time()]);
     $db->prepare('DELETE FROM devices WHERE owner_user_id IS NULL AND created_at < ?')->execute([time()-604800]);
@@ -168,6 +171,20 @@ function validate_settings(mixed $value): array {
         if(!is_array($interval)||!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/',$interval['start']??'')||!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/',$interval['end']??'')||($interval['start']??'')===($interval['end']??'')) error_response('Некорректный интервал');
         $days=array_values(array_unique(array_map('intval',$interval['days']??[]))); if(!$days||array_diff($days,range(0,6))) error_response('Некорректные дни');
         $interval=['start'=>$interval['start'],'end'=>$interval['end'],'days'=>$days];
+    }
+    return $out;
+}
+function validate_user_statuses(mixed $value,array $available): array {
+    if(!is_array($value)||count($value)>64) error_response('Некорректные статусы пользователей');
+    $allowedNames=array_flip($available); $out=[];
+    foreach($value as $row){
+        if(!is_array($row)) error_response('Некорректный статус пользователя');
+        $name=text_limit(trim((string)($row['name']??'')),128);
+        $state=(string)($row['state']??''); $event=$row['next_event']??null; $seconds=$row['seconds']??null;
+        if(!$name||!isset($allowedNames[$name])||!in_array($state,['disabled','uncontrolled','allowed','blocked','break'],true)) error_response('Некорректный статус пользователя');
+        if($event!==null&&!in_array($event,['lock','unlock'],true)) error_response('Некорректное следующее событие');
+        if($seconds!==null){$seconds=filter_var($seconds,FILTER_VALIDATE_INT,['options'=>['min_range'=>0,'max_range'=>691200]]);if($seconds===false)error_response('Некорректное время статуса');}
+        $out[]=['name'=>$name,'controlled'=>(bool)($row['controlled']??false),'state'=>$state,'seconds'=>$seconds,'next_event'=>$event];
     }
     return $out;
 }

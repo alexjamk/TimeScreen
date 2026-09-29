@@ -24,7 +24,7 @@ REM Create distribution directory
 if not exist "dist" mkdir dist
 
 REM --------------------------------------------------
-REM [1/2] Build GUI EXE (onefile, windowed, with icon)
+REM [1/2] Build GUI EXE (onedir avoids temporary _MEI extraction failures)
 REM --------------------------------------------------
 echo.
 echo [1/2] Building GUI (TimeScreenControl.exe)...
@@ -42,7 +42,7 @@ python -m PyInstaller --noconfirm --clean ^
     --hidden-import tkinter ^
     --hidden-import tkinter.ttk ^
     --hidden-import bcrypt ^
-    --onefile ^
+    --onedir ^
     --windowed ^
     "%CD%\src\main.py"
 
@@ -100,8 +100,10 @@ mkdir "dist\Release" >nul 2>&1
 if errorlevel 1 goto RELEASE_ERROR
 :RELEASE_READY
 
-REM Copy GUI EXE
-copy "%PYI_DIST%\TimeScreenControl.exe" "dist\Release\" >nul
+REM Copy GUI onedir. Keeping _internal beside the EXE avoids _MEI temp cleanup warnings.
+if exist "dist\Release\_internal" rmdir /s /q "dist\Release\_internal"
+copy "%PYI_DIST%\TimeScreenControl\TimeScreenControl.exe" "dist\Release\" >nul
+xcopy /E /I /Q /Y "%PYI_DIST%\TimeScreenControl\_internal" "dist\Release\_internal" >nul
 
 REM Copy Service onedir
 xcopy /E /I /Q /Y "%PYI_DIST%\TimeScreenService" "dist\Release\TimeScreenService" >nul
@@ -126,17 +128,18 @@ echo   Build complete!
 echo ============================================
 echo.
 echo Release package (dist\Release\):
-echo   - TimeScreenControl.exe     (GUI, onefile)
+echo   - TimeScreenControl.exe     (GUI, onedir)
+echo   - _internal\                (GUI runtime)
 echo   - TimeScreenService\        (service, onedir)
 echo   - install.bat               (install)
 echo   - uninstall.bat             (uninstall)
 echo   - README.md                 (documentation)
 echo.
 echo Graphical installer:
-echo   - dist\Installer\TimeScreenControl-Setup-3.6.exe
+echo   - dist\Installer\TimeScreenControl-Setup-3.7.exe
 echo.
 echo Installation:
-echo   1. Copy TimeScreenControl-Setup-3.6.exe to the target PC
+echo   1. Copy TimeScreenControl-Setup-3.7.exe to the target PC
 echo   2. Run setup and follow the wizard
 echo.
 rmdir /s /q "%PYI_ROOT%" >nul 2>&1

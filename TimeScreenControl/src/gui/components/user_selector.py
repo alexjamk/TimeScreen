@@ -5,55 +5,14 @@ Scrollable list of Windows users for selection.
 
 import tkinter as tk
 from tkinter import ttk, messagebox
-import json
-import os
-import subprocess
 from typing import List
+
+from utils.windows_users import get_visible_windows_users
 
 
 def get_all_windows_users() -> List[str]:
-    """
-    Get list of all local Windows users.
-    
-    Returns:
-        List of usernames (excluding system accounts)
-    """
-    exclude = {
-        'Administrator', 'Guest', 'DefaultAccount',
-        'WDAGUtilityAccount', 'DefaultAppPool', 'IUSR', 'IWAM',
-        'Администратор', 'Гость',
-    }
-
-    users = set()
-    current = os.environ.get("USERNAME")
-    if current:
-        users.add(current)
-
-    try:
-        command = (
-            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
-            "Get-LocalUser | Where-Object { $_.Enabled -eq $true } | "
-            "Select-Object -ExpandProperty Name | ConvertTo-Json"
-        )
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
-        )
-        if result.returncode == 0 and result.stdout:
-            raw = result.stdout.decode("utf-8-sig", errors="replace").strip()
-            parsed = json.loads(raw) if raw else []
-            if isinstance(parsed, str):
-                parsed = [parsed]
-            users.update(parsed)
-    except Exception as e:
-        print(f"Error getting users via PowerShell: {e}")
-
-    visible_users = [
-        u for u in users
-        if u and u not in exclude and not u.endswith('$')
-    ]
-    return sorted(visible_users, key=lambda u: (u.lower() != (current or "").lower(), u.lower()))
+    """Compatibility wrapper around the shared account enumeration."""
+    return get_visible_windows_users()
 
 
 class UserSelector(ttk.Frame):

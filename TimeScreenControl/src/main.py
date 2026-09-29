@@ -84,7 +84,10 @@ def main():
             if not is_windows_admin():
                 print("Administrator privileges are required")
                 sys.exit(5)
-            sys.exit(0 if ConfigManager(read_only=False).set_grace() else 1)
+            username = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("USERNAME", "")
+            sys.exit(0 if ConfigManager(read_only=False).set_grace(
+                username=username
+            ) else 1)
         elif cmd == "--version":
             print(f"TimeScreen Control v{APP_VERSION}")
         elif cmd == "--help":

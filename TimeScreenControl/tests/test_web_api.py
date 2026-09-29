@@ -74,18 +74,34 @@ class TestWebApi(unittest.TestCase):
         restored,_ = self.call("me", None, cookie=cookie); csrf=restored["csrf"]
         device_id=str(uuid.uuid4()); token="t"*43; auth={"Authorization":f"Bearer {device_id}.{token}"}
         self.call("device-register", {"device_id":device_id,"token":token,"name":"Test PC","platform":"Windows"})
+        for _ in range(25):
+            self.call("device-register", {"device_id":device_id,"token":token,"name":"Test PC","platform":"Windows"})
         self.call("device-pair-code", {"code":"123456"}, auth)
         paired,_=self.call("pair", {"code":"123456"}, {"X-CSRF-Token":csrf}, cookie); self.assertEqual(paired["device_id"],device_id)
         config={"enabled":True,"intervals":[{"start":"08:00","end":"21:00","days":[0,1,2,3,4]}],"controlled_users":["Child"],"show_timer":True,"break_enabled":True,"break_duration_minutes":10,"work_duration_minutes":60}
-        synced,_=self.call("device-sync", {"known_revision":0,"local_dirty":True,"config":config,"available_users":["Child","Admin"]}, auth); self.assertEqual(synced["revision"],1)
-        devices,_=self.call("devices", None, cookie=cookie); self.assertEqual(devices["devices"][0]["available_users"],["Child","Admin"])
+        statuses=[{"name":"Child","controlled":True,"state":"allowed","seconds":3600,"next_event":"lock"},{"name":"Admin","controlled":False,"state":"uncontrolled","seconds":None,"next_event":None}]
+        synced,_=self.call("device-sync", {"known_revision":0,"local_dirty":True,"config":config,"available_users":["Child","Admin"],"user_statuses":statuses}, auth); self.assertEqual(synced["revision"],1)
+        devices,_=self.call("devices", None, cookie=cookie); self.assertEqual(devices["devices"][0]["available_users"],["Child","Admin"]); self.assertEqual(devices["devices"][0]["user_statuses"][0]["state"],"allowed")
         config["enabled"]=False
         self.call("device-config", {"device_id":device_id,"config":config}, {"X-CSRF-Token":csrf}, cookie)
-        remote,_=self.call("device-sync", {"known_revision":1,"local_dirty":False,"config":dict(config,enabled=True),"available_users":["Child"]}, auth); self.assertFalse(remote["config"]["enabled"])
-        self.call("grant-time", {"device_id":device_id,"minutes":30}, {"X-CSRF-Token":csrf}, cookie)
-        command,_=self.call("device-sync", {"known_revision":remote["revision"],"local_dirty":False,"config":config,"available_users":["Child"]}, auth)
+        child_status=[{"name":"Child","controlled":True,"state":"blocked","seconds":600,"next_event":"unlock"}]
+        remote,_=self.call("device-sync", {"known_revision":1,"local_dirty":False,"config":dict(config,enabled=True),"available_users":["Child"],"user_statuses":child_status}, auth); self.assertFalse(remote["config"]["enabled"])
+        self.call("grant-time", {"device_id":device_id,"username":"Child","minutes":30}, {"X-CSRF-Token":csrf}, cookie)
+        command,_=self.call("device-sync", {"known_revision":remote["revision"],"local_dirty":False,"config":config,"available_users":["Child"],"user_statuses":child_status}, auth)
         self.assertEqual(command["commands"][0]["payload"]["minutes"],30)
+        self.assertEqual(command["commands"][0]["payload"]["username"],"Child")
         self.call("device-ack", {"command_ids":[command["commands"][0]["id"]]}, auth)
+        for index, code in enumerate(("234567", "345678"), start=2):
+            extra_id=str(uuid.uuid4()); extra_token=(str(index)*43); extra_auth={"Authorization":f"Bearer {extra_id}.{extra_token}"}
+            self.call("device-register", {"device_id":extra_id,"token":extra_token,"name":f"PC {index}","platform":"Windows"})
+            self.call("device-pair-code", {"code":code}, extra_auth)
+            self.call("pair", {"code":code}, {"X-CSRF-Token":csrf}, cookie)
+        fourth_id=str(uuid.uuid4()); fourth_token="4"*43; fourth_auth={"Authorization":f"Bearer {fourth_id}.{fourth_token}"}
+        self.call("device-register", {"device_id":fourth_id,"token":fourth_token,"name":"PC 4","platform":"Windows"})
+        self.call("device-pair-code", {"code":"456789"}, fourth_auth)
+        with self.assertRaises(urllib.error.HTTPError) as limit:
+            self.call("pair", {"code":"456789"}, {"X-CSRF-Token":csrf}, cookie)
+        self.assertEqual(limit.exception.code,409); limit.exception.close()
         self.call("unlink", {"device_id":device_id}, {"X-CSRF-Token":csrf}, cookie)
         revoked,_=self.call("device-revoke", {}, auth); self.assertTrue(revoked["ok"])
 

@@ -194,7 +194,9 @@ class LockScreen:
             justify=tk.CENTER,
         ).pack(pady=(0, 30))
 
-        grace_seconds = self.cfg.get_grace_remaining_seconds()
+        grace_seconds = self.cfg.get_grace_remaining_seconds(
+            username=os.environ.get("USERNAME", "")
+        )
         if grace_seconds is not None:
             minutes = grace_seconds // 60
             seconds = grace_seconds % 60
@@ -324,7 +326,7 @@ class LockScreen:
     def _unlock_with_grace(self):
         """Elevated path used only after Windows administrator verification."""
         self.cfg = ConfigManager(read_only=False)
-        if not self.cfg.set_grace():
+        if not self.cfg.set_grace(username=os.environ.get("USERNAME", "")):
             self.status_label.config(text=f"Не удалось включить грейс-период: {self.cfg.last_error}")
             return False
 
@@ -418,11 +420,15 @@ class LockScreen:
         try:
             if getattr(sys, "frozen", False):
                 executable = sys.executable
-                parameters = "--grant-grace"
+                parameters = subprocess.list2cmdline([
+                    "--grant-grace", os.environ.get("USERNAME", "")
+                ])
             else:
                 executable = sys.executable
                 main_path = Path(__file__).parent.parent / "main.py"
-                parameters = f'"{main_path}" --grant-grace'
+                parameters = subprocess.list2cmdline([
+                    str(main_path), "--grant-grace", os.environ.get("USERNAME", "")
+                ])
 
             rc = ctypes.windll.shell32.ShellExecuteW(
                 None,
@@ -439,7 +445,7 @@ class LockScreen:
     def _poll_uac_grace(self, attempts: int = 30):
         """Wait until the elevated helper writes grace into config."""
         cfg = ConfigManager(read_only=True)
-        if cfg.is_in_grace():
+        if cfg.is_in_grace(username=os.environ.get("USERNAME", "")):
             self._destroy_all_windows()
             return
 
@@ -466,7 +472,7 @@ class LockScreen:
             )
             should_block = cfg.should_block_user(username) or (
                 cfg.is_enabled() and cfg.is_controlled_user(username)
-                and not cfg.is_in_grace() and break_active
+                and not cfg.is_in_grace(username=username) and break_active
             )
             if not should_block:
                 self._destroy_all_windows()

@@ -59,11 +59,12 @@ try {
     }
 
     if($action==='device-register' && $method==='POST'){
-        $data=json_input(); rate_limit('device-register',$_SERVER['REMOTE_ADDR']??'',20,3600);
+        $data=json_input();
         $id=(string)($data['device_id']??''); $token=(string)($data['token']??''); $name=text_limit(trim((string)($data['name']??'Компьютер')),100); $platform=text_limit(trim((string)($data['platform']??'Windows')),100);
         if(!preg_match('/^[a-f0-9-]{36}$/',$id)||strlen($token)<32) error_response('Некорректные данные устройства');
         $stmt=db()->prepare('SELECT token_hash FROM devices WHERE id=?'); $stmt->execute([$id]); $existing=$stmt->fetch();
         if($existing && !hash_equals($existing['token_hash'],token_hash($token))) error_response('Устройство уже зарегистрировано',409);
+        if(!$existing) rate_limit('device-register',$_SERVER['REMOTE_ADDR']??'',20,3600);
         db()->prepare('INSERT INTO devices(id,token_hash,name,platform,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform')->execute([$id,token_hash($token),$name,$platform,time()]);
         json_response(['ok'=>true]);
     }
@@ -78,6 +79,8 @@ try {
     if($action==='pair' && $method==='POST'){
         $user=current_user(true); $data=json_input(); $code=(string)($data['code']??'');
         rate_limit('pair-user',(string)$user['id'],5,900); rate_limit('pair-ip',$_SERVER['REMOTE_ADDR']??'',20,900);
+        $count=db()->prepare('SELECT COUNT(*) FROM devices WHERE owner_user_id=?'); $count->execute([$user['id']]);
+        if((int)$count->fetchColumn()>=3) error_response('Можно связать не более трёх устройств',409);
         if(!preg_match('/^\d{6}$/',$code)) error_response('Код не найден или истёк',404);
         $stmt=db()->prepare('SELECT * FROM devices WHERE pairing_hash=? AND pairing_expires>=? AND owner_user_id IS NULL'); $stmt->execute([token_hash('pair:'.$code),time()]); $matches=$stmt->fetchAll();
         if(count($matches)!==1) error_response('Код не найден или истёк',404);
@@ -86,8 +89,8 @@ try {
     }
 
     if($action==='devices' && $method==='GET'){
-        $user=current_user(); $stmt=db()->prepare('SELECT id,name,platform,last_seen_at,config_json,config_revision,available_users_json FROM devices WHERE owner_user_id=? ORDER BY name'); $stmt->execute([$user['id']]);
-        $items=[]; foreach($stmt as $row){$row['config']=$row['config_json']?json_decode($row['config_json'],true):null; $row['available_users']=json_decode($row['available_users_json'],true)?:[]; unset($row['config_json'],$row['available_users_json']); $items[]=$row;}
+        $user=current_user(); $stmt=db()->prepare('SELECT id,name,platform,last_seen_at,config_json,config_revision,available_users_json,user_statuses_json FROM devices WHERE owner_user_id=? ORDER BY name'); $stmt->execute([$user['id']]);
+        $items=[]; foreach($stmt as $row){$row['config']=$row['config_json']?json_decode($row['config_json'],true):null; $row['available_users']=json_decode($row['available_users_json'],true)?:[]; $row['user_statuses']=json_decode($row['user_statuses_json'],true)?:[]; unset($row['config_json'],$row['available_users_json'],$row['user_statuses_json']); $items[]=$row;}
         json_response(['ok'=>true,'devices'=>$items,'server_time'=>time()]);
     }
 
@@ -98,9 +101,10 @@ try {
     }
 
     if($action==='grant-time' && $method==='POST'){
-        $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??''); $minutes=filter_var($data['minutes']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>1,'max_range'=>180]]); if($minutes===false) error_response('Допустимо от 1 до 180 минут');
-        $stmt=db()->prepare('SELECT 1 FROM devices WHERE id=? AND owner_user_id=?'); $stmt->execute([$id,$user['id']]); if(!$stmt->fetchColumn()) error_response('Устройство не найдено',404);
-        db()->prepare('INSERT INTO commands(device_id,type,payload_json,created_at) VALUES(?,?,?,?)')->execute([$id,'grant-time',json_encode(['minutes'=>$minutes]),time()]); audit((int)$user['id'],$id,'grant-time'); json_response(['ok'=>true]);
+        $user=current_user(true); $data=json_input(); $id=(string)($data['device_id']??''); $username=text_limit(trim((string)($data['username']??'')),128); $minutes=filter_var($data['minutes']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>1,'max_range'=>180]]); if($minutes===false) error_response('Допустимо от 1 до 180 минут');
+        $stmt=db()->prepare('SELECT available_users_json FROM devices WHERE id=? AND owner_user_id=?'); $stmt->execute([$id,$user['id']]); $device=$stmt->fetch(); if(!$device) error_response('Устройство не найдено',404);
+        $available=json_decode($device['available_users_json'],true)?:[]; if(!$username||!in_array($username,$available,true)) error_response('Пользователь не найден на устройстве',404);
+        db()->prepare('INSERT INTO commands(device_id,type,payload_json,created_at) VALUES(?,?,?,?)')->execute([$id,'grant-time',json_encode(['minutes'=>$minutes,'username'=>$username],JSON_UNESCAPED_UNICODE),time()]); audit((int)$user['id'],$id,'grant-time'); json_response(['ok'=>true]);
     }
 
     if($action==='unlink' && $method==='POST'){
@@ -109,10 +113,10 @@ try {
     }
 
     if($action==='device-sync' && $method==='POST'){
-        $device=device_auth(); $data=json_input(); $known=max(0,(int)($data['known_revision']??0)); $localDirty=(bool)($data['local_dirty']??false); $settings=validate_settings($data['config']??null); $users=array_slice(array_values(array_unique(array_map('strval',$data['available_users']??[]))),0,64); $db=db(); $db->beginTransaction();
+        $device=device_auth(); $data=json_input(); $known=max(0,(int)($data['known_revision']??0)); $localDirty=(bool)($data['local_dirty']??false); $settings=validate_settings($data['config']??null); $users=array_slice(array_values(array_unique(array_map(fn($v)=>text_limit(trim((string)$v),128),$data['available_users']??[]))),0,64); $statuses=validate_user_statuses($data['user_statuses']??[],$users); $db=db(); $db->beginTransaction();
         $stmt=$db->prepare('SELECT * FROM devices WHERE id=?'); $stmt->execute([$device['id']]); $fresh=$stmt->fetch(); $serverRevision=(int)$fresh['config_revision'];
         if(!$fresh['config_json'] || ($known===$serverRevision && $localDirty)){$serverRevision++; $db->prepare('UPDATE devices SET config_json=?,config_revision=?,config_updated_at=? WHERE id=?')->execute([json_encode($settings,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),$serverRevision,time(),$device['id']]); $remote=$settings;} else {$remote=json_decode($fresh['config_json'],true);}
-        $db->prepare('UPDATE devices SET available_users_json=?,last_seen_at=? WHERE id=?')->execute([json_encode($users,JSON_UNESCAPED_UNICODE),time(),$device['id']]);
+        $db->prepare('UPDATE devices SET available_users_json=?,user_statuses_json=?,last_seen_at=? WHERE id=?')->execute([json_encode($users,JSON_UNESCAPED_UNICODE),json_encode($statuses,JSON_UNESCAPED_UNICODE),time(),$device['id']]);
         $cmd=$db->prepare("SELECT id,type,payload_json FROM commands WHERE device_id=? AND status IN ('pending','delivered') ORDER BY id LIMIT 10"); $cmd->execute([$device['id']]); $commands=$cmd->fetchAll();
         foreach($commands as &$c){$c['payload']=json_decode($c['payload_json'],true); unset($c['payload_json']); $db->prepare("UPDATE commands SET status='delivered',delivered_at=? WHERE id=?")->execute([time(),$c['id']]);}
         $db->commit(); json_response(['ok'=>true,'paired'=>(bool)$fresh['owner_user_id'],'revision'=>$serverRevision,'config'=>$remote,'commands'=>$commands]);

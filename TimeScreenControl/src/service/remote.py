@@ -20,6 +20,8 @@ from typing import Callable, Iterator
 from config.manager import ConfigManager
 from config.paths import REMOTE_LOCK_PATH, REMOTE_STATE_PATH
 from app_info import APP_VERSION
+from service.breaks import get_active_break_remaining
+from utils.windows_users import get_visible_windows_users
 
 
 DEFAULT_API_URL = "https://time.k-alex.ru/api.php"
@@ -166,12 +168,40 @@ class RemoteSync:
 
     @staticmethod
     def available_users() -> list[str]:
-        try:
-            import win32net
-            rows, _total, _resume = win32net.NetUserEnum(None, 0, 2)
-            return sorted({row["name"] for row in rows if row.get("name") and not row["name"].endswith("$")}, key=str.casefold)
-        except Exception:
-            return [os.environ.get("USERNAME", "")] if os.environ.get("USERNAME") else []
+        return get_visible_windows_users()
+
+    @classmethod
+    def user_statuses(cls, cfg: ConfigManager) -> list[dict]:
+        """Build a compact per-account enforcement snapshot for the web UI."""
+        break_settings = cfg.get_break_settings()
+        statuses = []
+        for username in cls.available_users():
+            controlled = cfg.is_enabled() and cfg.is_controlled_user(username)
+            grace_seconds = cfg.get_grace_remaining_seconds(username=username)
+            break_seconds = (
+                get_active_break_remaining(username)
+                if controlled and break_settings["enabled"] and not grace_seconds else 0
+            )
+            if not cfg.is_enabled():
+                state, seconds, next_event = "disabled", None, None
+            elif not controlled:
+                state, seconds, next_event = "uncontrolled", None, None
+            elif grace_seconds:
+                state, seconds, next_event = "allowed", grace_seconds, "lock"
+            elif break_seconds > 0:
+                state, seconds, next_event = "break", break_seconds, "unlock"
+            else:
+                blocked = cfg.should_block_user(username)
+                seconds, next_event = cfg.get_next_event(username=username)
+                state = "blocked" if blocked else "allowed"
+            statuses.append({
+                "name": username,
+                "controlled": controlled,
+                "state": state,
+                "seconds": seconds,
+                "next_event": next_event,
+            })
+        return statuses
 
     def sync_once(self) -> None:
         state = self._load()
@@ -187,7 +217,9 @@ class RemoteSync:
             response = self._request("device-sync", {
                 "known_revision": int(state.get("known_revision", 0)),
                 "local_dirty": current_hash != state.get("last_config_hash"),
-                "config": settings, "available_users": self.available_users(),
+                "config": settings,
+                "available_users": self.available_users(),
+                "user_statuses": self.user_statuses(cfg),
             }, state)
             remote = response.get("config")
             if remote is not None and self._settings_hash(remote) != current_hash:
@@ -196,7 +228,11 @@ class RemoteSync:
                 settings = remote
             acknowledged = []
             for command in response.get("commands", []):
-                if command.get("type") == "grant-time" and cfg.set_grace_minutes(command.get("payload", {}).get("minutes")):
+                payload = command.get("payload", {})
+                if (command.get("type") == "grant-time"
+                        and cfg.set_grace_minutes(
+                            payload.get("minutes"), username=payload.get("username")
+                        )):
                     acknowledged.append(int(command["id"]))
             if acknowledged:
                 self._request("device-ack", {"command_ids": acknowledged}, state)

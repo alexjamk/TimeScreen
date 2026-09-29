@@ -240,12 +240,14 @@ class TimerOverlay:
         from config.manager import ConfigManager
 
         cfg = ConfigManager(read_only=True)
-        seconds, event_type = cfg.get_next_event()
+        username = os.environ.get("USERNAME", "")
+        seconds, event_type = cfg.get_next_event(username=username)
 
         break_settings = cfg.get_break_settings()
         username = os.environ.get("USERNAME", "")
         if (break_settings["enabled"] and cfg.is_enabled()
-                and cfg.is_controlled_user(username) and not cfg.is_in_grace()):
+                and cfg.is_controlled_user(username)
+                and not cfg.is_in_grace(username=username)):
             from service.breaks import get_break_cycle_status
             break_status = get_break_cycle_status(
                 username,
@@ -254,7 +256,7 @@ class TimerOverlay:
             )
             if break_status.in_break:
                 seconds, event_type = break_status.break_remaining_seconds, "break"
-            elif (cfg.is_allowed_time() and break_status.work_remaining_seconds is not None
+            elif (cfg.is_allowed_time(username=username) and break_status.work_remaining_seconds is not None
                     and (seconds is None or break_status.work_remaining_seconds < seconds)):
                 seconds, event_type = break_status.work_remaining_seconds, "break_due"
 

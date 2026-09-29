@@ -1,5 +1,5 @@
 #define MyAppName "TimeScreen Control"
-#define MyAppVersion "3.6"
+#define MyAppVersion "3.7"
 #define MyAppPublisher "Alex"
 #define MyAppExeName "TimeScreenControl.exe"
 #define ServiceName "TimeScreenControl"
@@ -45,11 +45,13 @@ Name: "{commonappdata}\TimeScreen"
 
 [Files]
 Source: "{#ReleaseDir}\TimeScreenControl.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#ReleaseDir}\TimeScreenService\*"; DestDir: "{app}\TimeScreenService"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#ReleaseDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\TimeScreenService"
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"

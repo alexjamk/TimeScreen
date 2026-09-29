@@ -130,12 +130,10 @@ class SettingsApp:
                     messagebox.showerror("Ошибка", self.cfg.last_error or "Не удалось сохранить пароль", parent=self.root)
                 return False
         else:
-            # Password exists - require authentication
-            dialog = PasswordDialog(self.root, verify_func=self.cfg.verify_password)
-            if dialog.result:
-                self.authenticated = True
-            else:
-                return False
+            # main.py only opens settings after Windows has supplied an elevated
+            # administrator token.  Asking for the TimeScreen password again is
+            # redundant and made normal settings access unnecessarily awkward.
+            self.authenticated = True
         
         return True
     

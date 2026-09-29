@@ -117,8 +117,8 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         eligible_for_work = (
             selected_user
             and break_settings["enabled"]
-            and not cfg.is_in_grace()
-            and cfg.is_allowed_time()
+            and not cfg.is_in_grace(username=username)
+            and cfg.is_allowed_time(username=username)
         )
         break_status = self.break_tracker.update(
             username=username,
@@ -134,7 +134,7 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
         # Crucial multi-user boundary: only the active session whose username is
         # explicitly selected is enforced; an empty selection controls nobody.
         should_lock = cfg.should_block_user(username) or (
-            selected_user and not cfg.is_in_grace() and break_status.in_break
+            selected_user and not cfg.is_in_grace(username=username) and break_status.in_break
         )
         if should_lock:
             self._ensure_lock_screen(session_id, username)
@@ -199,8 +199,8 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
             win32api.CloseHandle(thread_handle)
             return process_handle, pid
         finally:
-            if environment is not None:
-                win32profile.DestroyEnvironmentBlock(environment)
+            # CreateEnvironmentBlock returns a Python-owned mapping in pywin32;
+            # recent builds intentionally expose no DestroyEnvironmentBlock.
             win32api.CloseHandle(token)
 
     def _show_break_notification(self, session_id: int, minutes: int):
@@ -332,7 +332,9 @@ class TimeScreenService(win32serviceutil.ServiceFramework):
             self._failed_unlocks.append(now)
             time.sleep(1)
             return {"ok": False, "error": "Неверный пароль"}
-        if not cfg.set_grace():
+        identity = self._get_active_identity()
+        username = identity[1] if identity else None
+        if not cfg.set_grace(username=username):
             return {"ok": False, "error": cfg.last_error or "Не удалось сохранить grace-период"}
         self._failed_unlocks.clear()
         return {"ok": True}
