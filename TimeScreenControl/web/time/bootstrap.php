@@ -139,9 +139,26 @@ SQL);
 
 function run_maintenance(PDO|SqliteConnection $db): void {
     $now=time();
-    $stmt=$db->prepare("INSERT INTO app_meta(key,value) VALUES('last_maintenance',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(app_meta.value AS INTEGER)<?");
-    $stmt->execute([(string)$now,$now-3600]);
-    if($stmt->rowCount()!==1) return;
+    // A write-style UPSERT on every request still asks SQLite for the single
+    // writer lock even when its WHERE condition is false. Device sync can be
+    // holding that lock briefly, so ordinary UI reads used to fail with HTTP
+    // 500. Check the timestamp read-only first and treat maintenance as best
+    // effort when another request is writing.
+    $last=$db->prepare("SELECT value FROM app_meta WHERE key='last_maintenance'");
+    $last->execute();
+    if((int)$last->fetchColumn()>=$now-3600) return;
+    $db->exec('PRAGMA busy_timeout=100');
+    try {
+        $stmt=$db->prepare("INSERT INTO app_meta(key,value) VALUES('last_maintenance',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(app_meta.value AS INTEGER)<?");
+        $stmt->execute([(string)$now,$now-3600]);
+        if($stmt->rowCount()!==1) return;
+    } catch(Throwable $error) {
+        $message=text_lower($error->getMessage());
+        if(str_contains($message,'database is locked')||str_contains($message,'database is busy')) return;
+        throw $error;
+    } finally {
+        $db->exec('PRAGMA busy_timeout=5000');
+    }
     $db->prepare('DELETE FROM sessions WHERE expires_at < ?')->execute([$now]);
     $db->prepare('DELETE FROM users WHERE verified_at IS NULL AND verify_expires < ?')->execute([$now]);
     $db->prepare('DELETE FROM devices WHERE owner_user_id IS NULL AND created_at < ?')->execute([$now-604800]);
@@ -170,6 +187,17 @@ function json_response(array $data, int $status = 200): never {
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); exit;
 }
 function error_response(string $message, int $status = 400): never { json_response(['ok'=>false,'error'=>$message], $status); }
+function log_server_exception(Throwable $error): void {
+    try {
+        $dbPath=(string)(cfg()['db_path']??'');
+        $directory=$dbPath!==''?dirname($dbPath):(__DIR__.'/private');
+        $path=$directory.'/server-error.log';
+        if(is_file($path)&&filesize($path)>1048576) @rename($path,$path.'.old');
+        $line=sprintf("[%s] %s: %s in %s:%d\n",date(DATE_ATOM),get_class($error),$error->getMessage(),$error->getFile(),$error->getLine());
+        @file_put_contents($path,$line,FILE_APPEND|LOCK_EX);
+        @chmod($path,0640);
+    } catch(Throwable $ignored) {}
+}
 function random_token(int $bytes = 32): string { return rtrim(strtr(base64_encode(random_bytes($bytes)), '+/', '-_'), '='); }
 function token_hash(string $value): string { return hash_hmac('sha256', $value, cfg()['app_key']); }
 function client_ip(): string { return (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown'); }

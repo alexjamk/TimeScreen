@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -27,10 +28,11 @@ class TestWebApi(unittest.TestCase):
         sock = socket.socket(); sock.bind(("127.0.0.1", 0)); cls.port = sock.getsockname()[1]; sock.close()
         cls.base = f"http://127.0.0.1:{cls.port}"
         config = root / "config.php"
+        cls.db_path = root / "test.sqlite"
         php_path = lambda p: str(p).replace("\\", "/").replace("'", "\\'")
         config.write_text(
             "<?php return ["
-            f"'db_path'=>'{php_path(root / 'test.sqlite')}',"
+            f"'db_path'=>'{php_path(cls.db_path)}',"
             "'app_key'=>'" + "ab" * 32 + "',"
             f"'base_url'=>'{cls.base}',"
             "'mail_from'=>'test@example.invalid','mail_transport'=>'log',"
@@ -159,6 +161,20 @@ class TestWebApi(unittest.TestCase):
         self.assertEqual(limited.exception.code, 429)
         self.assertIsNotNone(limited.exception.headers.get("Retry-After"))
         limited.exception.close()
+
+    def test_health_does_not_fail_when_maintenance_writer_is_busy(self):
+        urllib.request.urlopen(self.base + "/api.php?action=health", timeout=3).close()
+        connection = sqlite3.connect(self.db_path, timeout=1)
+        try:
+            connection.execute("UPDATE app_meta SET value='0' WHERE key='last_maintenance'")
+            connection.commit()
+            connection.execute("BEGIN IMMEDIATE")
+            response = urllib.request.urlopen(self.base + "/api.php?action=health", timeout=3)
+            self.assertEqual(json.loads(response.read())["ok"], True)
+            response.close()
+        finally:
+            connection.rollback()
+            connection.close()
 
 
 if __name__ == "__main__":

@@ -189,5 +189,6 @@ try {
 
     error_response('Маршрут не найден',404);
 } catch(Throwable $e) {
+    log_server_exception($e);
     error_log('TimeScreen API: '.$e->getMessage()); error_response('Внутренняя ошибка сервера',500);
 }
