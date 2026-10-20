@@ -3,7 +3,7 @@
 # Password hashing (strong security)
 bcrypt>=5.0.0,<6
 # 12.3.0 fixes multiple 2026 parser memory-safety and decompression DoS issues.
-Pillow>=12.3.0,<13
+Pillow>=13.0.0,<14
 
 # Windows service support (optional, for production)
 pywin32>=311,<312; sys_platform == 'win32'
